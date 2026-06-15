@@ -152,11 +152,11 @@ installButton.addEventListener("click", async () => {
     installPromptEvent.prompt();
     const choice = await installPromptEvent.userChoice;
     installPromptEvent = null;
-    installButton.classList.add("hidden");
+    updateInstallButton();
     notify(choice.outcome === "accepted" ? "App instalado." : "Instalação cancelada.");
     return;
   }
-  notify("No iPhone, use Compartilhar e depois Adicionar à Tela de Início.");
+  notify(installHelpText());
 });
 
 document.querySelectorAll(".nav-item").forEach((button) => {
@@ -1728,27 +1728,43 @@ async function registerPwa() {
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     installPromptEvent = event;
-    installButton.classList.remove("hidden");
+    updateInstallButton();
   });
 
   window.addEventListener("appinstalled", () => {
     installPromptEvent = null;
-    installButton.classList.add("hidden");
+    updateInstallButton();
     notify("Pobres Criaturas foi instalado.");
   });
 
-  if (isIos() && !isStandalone()) {
-    installButton.classList.remove("hidden");
-    installButton.textContent = "Instalar no iPhone";
-  }
+  updateInstallButton();
 }
 
 function isIos() {
   return /iphone|ipad|ipod/i.test(navigator.userAgent);
 }
 
+function isAndroid() {
+  return /android/i.test(navigator.userAgent);
+}
+
 function isStandalone() {
   return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
+}
+
+function updateInstallButton() {
+  if (isStandalone()) {
+    installButton.classList.add("hidden");
+    return;
+  }
+  installButton.classList.remove("hidden");
+  installButton.textContent = isIos() ? "Instalar no iPhone" : "Instalar app";
+}
+
+function installHelpText() {
+  if (isIos()) return "No iPhone, abra no Safari, toque em Compartilhar e depois Adicionar à Tela de Início.";
+  if (isAndroid()) return "No Android, abra no Chrome, toque nos três pontos e escolha Instalar app ou Adicionar à tela inicial.";
+  return "Use o menu do navegador e escolha Instalar app ou Adicionar à tela inicial.";
 }
 
 function notificationCard(item) {
