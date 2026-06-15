@@ -50,6 +50,8 @@ let selectedBookId = state.books[0]?.id || "";
 let meetingEditing = false;
 let bookFormMode = null;
 let feedComposerOpen = false;
+let feedEditId = null;
+let feedCommentId = null;
 let rulesEditing = false;
 let reviewFormOpen = false;
 let cloudSaveTimer = null;
@@ -376,6 +378,12 @@ function withStateDefaults(value) {
   value.notificationSettings.pushEnabled ||= false;
   value.notificationSettings.reminders ||= {};
   value.indicationOrder ||= [];
+  value.feed ||= [];
+  value.feed.forEach((item) => {
+    item.likedBy ||= [];
+    item.comments ||= [];
+    item.likes = item.likedBy.length;
+  });
   return value;
 }
 
@@ -487,13 +495,14 @@ function renderHome() {
   viewRoot.innerHTML = `
     <section class="hero-grid">
       <article class="passport-page">
-        <div class="passport-title">
+        <div class="passport-title has-portrait">
           <img src="./assets/logo-pobres-criaturas.png" alt="Logo Pobres Criaturas" />
           <div>
             <p class="eyebrow">Esse passaporte pertence a</p>
             <h3>${escapeHtml(participant.name)}</h3>
             <p class="muted">${escapeHtml(participant.role)}</p>
           </div>
+          ${passportPortraitHtml(participant)}
         </div>
         <div class="passport-meta">
           <div class="stamp"><span>Livro favorito</span><strong>${escapeHtml(participant.favoriteBook)}</strong></div>
@@ -774,6 +783,8 @@ function wireReviewControls(selected) {
 function renderFeed() {
   const participant = currentParticipant();
   const currentBook = currentReadingBook(participant) || latestBook();
+  const editingFeed = state.feed.find((item) => item.id === feedEditId && item.participantId === participant.id);
+  const formOpen = state.books.length && (feedComposerOpen || editingFeed);
   viewRoot.innerHTML = `
     <section class="panel">
       <div class="section-heading">
@@ -781,25 +792,9 @@ function renderFeed() {
           <p class="eyebrow">Histórico de leitura</p>
           <h3>Feed do clube</h3>
         </div>
-        ${state.books.length && !feedComposerOpen ? `<button class="save-button" type="button" data-open-feed-form>Fazer histórico de leitura</button>` : ""}
+        ${state.books.length && !formOpen ? `<button class="save-button" type="button" data-open-feed-form>Fazer histórico de leitura</button>` : ""}
       </div>
-      ${state.books.length && feedComposerOpen ? `
-        <form id="feed-form" class="feed-form">
-          <label><span>Livro</span>${bookSelect(currentBook?.id)}</label>
-          <label><span>Status</span>
-            <select name="type">
-              <option>Começou a ler</option>
-              <option>Atualizou progresso</option>
-              <option>Marcou como lido</option>
-              <option>Fez um histórico de leitura</option>
-            </select>
-          </label>
-          <label><span>Progresso</span><input name="progress" type="number" min="0" max="100" value="${state.progress[participant.id]?.[currentBook?.id] || 0}" /></label>
-          <button class="save-button" type="submit">Publicar</button>
-          <label style="grid-column: 1 / -1"><span>Comentário</span><textarea name="text" placeholder="Ex.: capítulo 12 e já desconfio de todo mundo"></textarea></label>
-          <button class="ghost-button" type="button" data-cancel-feed-form>Cancelar</button>
-        </form>
-      ` : `<p class="muted">${state.books.length ? "Quando quiser atualizar progresso, começar ou concluir leitura, clique no botão acima." : "Cadastre um livro primeiro para publicar progresso no feed."}</p>`}
+      ${formOpen ? feedFormHtml(editingFeed, currentBook, participant) : `<p class="muted">${state.books.length ? "Quando quiser atualizar progresso, começar ou concluir leitura, clique no botão acima." : "Cadastre um livro primeiro para publicar progresso no feed."}</p>`}
     </section>
     <section class="feed-list">
       ${state.feed.length ? state.feed.map(feedCard).join("") : emptyPanel("Feed vazio por enquanto", "As atualizações de leitura vão aparecer aqui.")}
@@ -811,9 +806,60 @@ function renderFeed() {
   });
   document.querySelector("[data-cancel-feed-form]")?.addEventListener("click", () => {
     feedComposerOpen = false;
+    feedEditId = null;
     renderFeed();
   });
   document.querySelector("#feed-form")?.addEventListener("submit", saveFeed);
+  document.querySelectorAll("[data-edit-feed]").forEach((button) => {
+    button.addEventListener("click", () => {
+      feedEditId = button.dataset.editFeed;
+      feedComposerOpen = false;
+      feedCommentId = null;
+      renderFeed();
+    });
+  });
+  document.querySelectorAll("[data-like-feed]").forEach((button) => {
+    button.addEventListener("click", () => toggleFeedLike(button.dataset.likeFeed));
+  });
+  document.querySelectorAll("[data-comment-feed]").forEach((button) => {
+    button.addEventListener("click", () => {
+      feedCommentId = feedCommentId === button.dataset.commentFeed ? null : button.dataset.commentFeed;
+      feedEditId = null;
+      feedComposerOpen = false;
+      renderFeed();
+    });
+  });
+  document.querySelectorAll("[data-cancel-feed-comment]").forEach((button) => {
+    button.addEventListener("click", () => {
+      feedCommentId = null;
+      renderFeed();
+    });
+  });
+  document.querySelectorAll("[data-feed-comment-form]").forEach((form) => {
+    form.addEventListener("submit", saveFeedComment);
+  });
+}
+
+function feedFormHtml(item, currentBook, participant) {
+  const selectedBookIdForForm = item?.bookId || currentBook?.id;
+  const selectedType = item?.type || "Começou a ler";
+  const progress = item?.progress ?? state.progress[participant.id]?.[selectedBookIdForForm] ?? 0;
+  const options = ["Começou a ler", "Atualizou progresso", "Marcou como lido", "Fez um histórico de leitura"];
+  return `
+    <form id="feed-form" class="feed-form">
+      <input type="hidden" name="feedId" value="${escapeAttr(item?.id || "")}" />
+      <label><span>Livro</span>${bookSelect(selectedBookIdForForm)}</label>
+      <label><span>Status</span>
+        <select name="type">
+          ${options.map((option) => `<option ${option === selectedType ? "selected" : ""}>${option}</option>`).join("")}
+        </select>
+      </label>
+      <label><span>Progresso</span><input name="progress" type="number" min="0" max="100" value="${progress}" /></label>
+      <button class="save-button" type="submit">${item ? "Salvar histórico" : "Publicar"}</button>
+      <label style="grid-column: 1 / -1"><span>Comentário</span><textarea name="text" placeholder="Ex.: capítulo 12 e já desconfio de todo mundo">${escapeHtml(item?.text || "")}</textarea></label>
+      <button class="ghost-button" type="button" data-cancel-feed-form>Cancelar</button>
+    </form>
+  `;
 }
 
 function renderRules() {
@@ -1139,30 +1185,99 @@ function saveFeed(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   const participant = currentParticipant();
+  const feedId = data.get("feedId");
   const bookId = data.get("bookId");
   const progress = Math.max(0, Math.min(100, Number(data.get("progress") || 0)));
+  const type = data.get("type");
+  const text = data.get("text");
   state.progress[participant.id] ||= {};
   state.progress[participant.id][bookId] = progress;
   participant.currentBookId = bookId;
-  state.feed.unshift({
-    id: `f${Date.now()}`,
-    participantId: participant.id,
-    date: new Date().toLocaleDateString("pt-BR"),
-    type: data.get("type"),
-    bookId,
-    text: data.get("text"),
-    progress,
-    likes: 0,
-  });
+  syncCompletedBook(participant, bookId, type, progress);
+
+  const existing = feedId ? state.feed.find((item) => item.id === feedId && item.participantId === participant.id) : null;
+  if (existing) {
+    existing.type = type;
+    existing.bookId = bookId;
+    existing.text = text;
+    existing.progress = progress;
+    existing.editedAt = new Date().toLocaleDateString("pt-BR");
+  } else {
+    state.feed.unshift({
+      id: `f${Date.now()}`,
+      participantId: participant.id,
+      date: new Date().toLocaleDateString("pt-BR"),
+      type,
+      bookId,
+      text,
+      progress,
+      likes: 0,
+      likedBy: [],
+      comments: [],
+    });
+  }
   saveState();
-  notify("Atualização publicada no feed.");
+  notify(existing ? "Histórico atualizado." : "Atualização publicada no feed.");
   createNotification({
     type: "feed",
-    title: "Histórico de leitura",
+    title: existing ? "Histórico editado" : "Histórico de leitura",
     message: `${participant.name} atualizou ${bookById(bookId)?.title || "uma leitura"} para ${progress}%.`,
     push: true,
   });
   feedComposerOpen = false;
+  feedEditId = null;
+  renderFeed();
+}
+
+function syncCompletedBook(participant, bookId, type, progress) {
+  const completed = type === "Marcou como lido" || Number(progress) >= 100;
+  if (!completed || !bookId) return;
+  participant.completedBookIds ||= [];
+  if (participant.completedBookIds.includes(bookId)) return;
+  participant.completedBookIds.push(bookId);
+  participant.booksReadClub = Number(participant.booksReadClub || 0) + 1;
+  participant.booksReadYear = Number(participant.booksReadYear || 0) + 1;
+}
+
+function toggleFeedLike(feedId) {
+  const participant = currentParticipant();
+  const item = state.feed.find((feedItem) => feedItem.id === feedId);
+  if (!item || !participant) return;
+  item.likedBy ||= [];
+  if (item.likedBy.includes(participant.id)) {
+    item.likedBy = item.likedBy.filter((id) => id !== participant.id);
+    notify("Curtida removida.");
+  } else {
+    item.likedBy.push(participant.id);
+    notify("Histórico curtido.");
+  }
+  item.likes = item.likedBy.length;
+  saveState();
+  renderFeed();
+}
+
+function saveFeedComment(event) {
+  event.preventDefault();
+  const participant = currentParticipant();
+  const data = new FormData(event.currentTarget);
+  const feedId = data.get("feedId");
+  const text = data.get("comment").trim();
+  const item = state.feed.find((feedItem) => feedItem.id === feedId);
+  if (!item || !participant) return;
+  if (!text) {
+    notify("Escreva um comentário antes de salvar.");
+    return;
+  }
+  item.comments ||= [];
+  item.comments.push({
+    id: `c${Date.now()}`,
+    participantId: participant.id,
+    text,
+    date: new Date().toLocaleDateString("pt-BR"),
+  });
+  feedCommentId = null;
+  saveState();
+  notify("Comentário publicado.");
   renderFeed();
 }
 
@@ -1272,6 +1387,12 @@ function feedCard(item) {
   const participant = participantById(item.participantId);
   const book = bookById(item.bookId);
   if (!participant || !book) return "";
+  item.likedBy ||= [];
+  item.comments ||= [];
+  item.likes = item.likedBy.length;
+  const current = currentParticipant();
+  const isMine = item.participantId === current.id;
+  const liked = item.likedBy.includes(current.id);
   return `
     <article class="feed-card">
       <header class="feed-author">
@@ -1291,10 +1412,43 @@ function feedCard(item) {
         ${miniCoverHtml(book)}
       </div>
       <div class="feed-actions">
-        <button class="like-button" type="button">${item.likes || 0} curtida${item.likes === 1 ? "" : "s"}</button>
-        <button class="comment-button" type="button">comentar</button>
+        <button class="like-button ${liked ? "active" : ""}" type="button" data-like-feed="${item.id}">
+          ${liked ? "Descurtir" : "Curtir"} · ${item.likes || 0} curtida${item.likes === 1 ? "" : "s"}
+        </button>
+        <button class="comment-button" type="button" data-comment-feed="${item.id}">
+          Comentar · ${item.comments.length}
+        </button>
+        ${isMine ? `<button class="ghost-button" type="button" data-edit-feed="${item.id}">Editar histórico</button>` : ""}
       </div>
+      ${item.comments.length ? `
+        <div class="feed-comments">
+          ${item.comments.map(feedCommentHtml).join("")}
+        </div>
+      ` : ""}
+      ${feedCommentId === item.id ? `
+        <form class="feed-comment-form" data-feed-comment-form>
+          <input type="hidden" name="feedId" value="${escapeAttr(item.id)}" />
+          <label>
+            <span>Comentário</span>
+            <textarea name="comment" placeholder="Escreva sua reação a esse histórico"></textarea>
+          </label>
+          <div class="button-row">
+            <button class="save-button" type="submit">Publicar comentário</button>
+            <button class="ghost-button" type="button" data-cancel-feed-comment>Cancelar</button>
+          </div>
+        </form>
+      ` : ""}
     </article>
+  `;
+}
+
+function feedCommentHtml(comment) {
+  return `
+    <div class="feed-comment">
+      <strong>${escapeHtml(nameById(comment.participantId))}</strong>
+      <span>${escapeHtml(comment.date || "")}</span>
+      <p>${escapeHtml(comment.text)}</p>
+    </div>
   `;
 }
 
@@ -1331,6 +1485,13 @@ function avatarHtml(participant, style = "") {
     return `<img class="avatar" src="${participant.photo}" alt="Foto de ${escapeAttr(participant.name)}" style="${style}" />`;
   }
   return `<div class="avatar" data-tone="${participant.tone}" style="${style}">${initials(participant.name)}</div>`;
+}
+
+function passportPortraitHtml(participant) {
+  if (participant.photo) {
+    return `<img class="passport-portrait" src="${participant.photo}" alt="Foto de ${escapeAttr(participant.name)}" />`;
+  }
+  return `<div class="passport-portrait empty" aria-label="Foto ainda não enviada">${initials(participant.name)}</div>`;
 }
 
 function emptyBooksPanel() {
@@ -1618,7 +1779,7 @@ async function enablePushPrototype() {
   if (Notification.permission === "granted") {
     state.notificationSettings.pushEnabled = true;
     saveState();
-    sendPushPrototype("Notificações ativadas", "O Pobres Criaturas vai avisar sobre livros e reuniões neste navegador.");
+    sendPushPrototype("Notificações ativadas", "O Pobres Criaturas vai avisar sobre livros e reuniões quando este aparelho permitir.");
     renderNotificationPanel();
     return;
   }
@@ -1630,23 +1791,32 @@ async function enablePushPrototype() {
   state.notificationSettings.pushEnabled = permission === "granted";
   saveState();
   if (permission === "granted") {
-    sendPushPrototype("Notificações ativadas", "Você receberá alertas do clube enquanto o navegador permitir.");
+    sendPushPrototype("Notificações ativadas", "Você receberá alertas do clube quando este aparelho permitir.");
   } else {
     notify("Sem permissão de push. A central interna continua funcionando.");
   }
   renderNotificationPanel();
 }
 
-function sendPushPrototype(title, message) {
+async function sendPushPrototype(title, message) {
   if (!state.notificationSettings?.pushEnabled) return;
   if (!("Notification" in window) || Notification.permission !== "granted") return;
   try {
+    if ("serviceWorker" in navigator) {
+      const registration = await navigator.serviceWorker.ready;
+      await registration.showNotification(title, {
+        body: message,
+        icon: "./assets/logo-pobres-criaturas.png",
+        badge: "./assets/icon-192.png",
+      });
+      return;
+    }
     new Notification(title, {
       body: message,
       icon: "./assets/logo-pobres-criaturas.png",
     });
   } catch {
-    notify("Push bloqueado neste modo local, mas a notificação foi salva no app.");
+    notify("Notificação do aparelho indisponível agora; o aviso ficou salvo na central do app.");
   }
 }
 
@@ -1684,8 +1854,8 @@ function pushButtonLabel() {
 
 function pushHelpText() {
   if (!("Notification" in window)) return "A central interna funciona, mas este navegador não oferece push.";
-  if (location.protocol === "file:") return "Neste protótipo local, o push depende da permissão do navegador. Em app publicado, isso vira push real com servidor.";
-  return "Com permissão do navegador, os alertas também aparecem como notificação do sistema.";
+  if (location.protocol === "file:") return "Neste protótipo local, o aviso depende da permissão do navegador. No app publicado, ele tenta usar a notificação do aparelho.";
+  return "Nesta versão, os avisos ficam na central do app e tentam aparecer no aparelho quando ele permite. Push real com o app fechado para todas as participantes entra na próxima etapa de servidor.";
 }
 
 function checkMeetingReminders() {

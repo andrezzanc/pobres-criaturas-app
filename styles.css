@@ -488,17 +488,6 @@ select:focus {
     repeating-linear-gradient(0deg, transparent 0 30px, rgba(217, 162, 58, 0.09) 30px 31px);
 }
 
-.passport-page::before {
-  content: "";
-  position: absolute;
-  top: 18px;
-  right: 18px;
-  width: 78px;
-  height: 78px;
-  border: 2px dashed rgba(143, 63, 32, 0.35);
-  border-radius: 50%;
-}
-
 .passport-title {
   display: grid;
   grid-template-columns: 118px minmax(0, 1fr);
@@ -506,10 +495,32 @@ select:focus {
   align-items: center;
 }
 
+.passport-title.has-portrait {
+  grid-template-columns: 118px minmax(0, 1fr) 86px;
+}
+
 .passport-title img {
   width: 118px;
   height: 118px;
   object-fit: contain;
+}
+
+.passport-title .passport-portrait {
+  width: 86px;
+  height: 86px;
+  border-radius: 50%;
+  border: 2px dashed rgba(143, 63, 32, 0.35);
+  object-fit: cover;
+  background: rgba(255, 250, 240, 0.72);
+  color: var(--gold-dark);
+  display: grid;
+  place-items: center;
+  font-weight: 900;
+  justify-self: end;
+}
+
+.passport-title .passport-portrait.empty {
+  opacity: 0.72;
 }
 
 .passport-title h3 {
@@ -975,6 +986,7 @@ select:focus {
   background: transparent;
   color: var(--rose);
   font-weight: 900;
+  cursor: pointer;
 }
 
 .comment-button {
@@ -982,6 +994,46 @@ select:focus {
   background: transparent;
   color: var(--blue);
   font-weight: 900;
+  cursor: pointer;
+}
+
+.like-button.active {
+  color: var(--terracotta);
+}
+
+.feed-comments {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.feed-comment {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: rgba(255, 250, 240, 0.72);
+}
+
+.feed-comment span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.feed-comment p {
+  margin: 0;
+}
+
+.feed-comment-form {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.feed-comment-form textarea {
+  min-height: 82px;
 }
 
 .favorite-toggle {
@@ -1189,6 +1241,19 @@ select:focus {
   .passport-title img {
     width: 96px;
     height: 96px;
+  }
+
+  .passport-title.has-portrait {
+    grid-template-columns: minmax(0, 1fr) 78px;
+  }
+
+  .passport-title.has-portrait > img:first-child {
+    display: none;
+  }
+
+  .passport-title .passport-portrait {
+    width: 78px;
+    height: 78px;
   }
 
   .topbar {
