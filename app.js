@@ -56,6 +56,7 @@ let rulesEditing = false;
 let reviewFormOpen = false;
 let cloudSaveTimer = null;
 let cloudSaveInFlight = false;
+let cloudSavePending = false;
 let notificationHistoryOpen = false;
 
 const authScreen = document.querySelector("#auth-screen");
@@ -264,7 +265,7 @@ async function handleCloudAuth(event) {
 async function loadCloudState() {
   const { data, error } = await clubDb
     .from("club_state")
-    .select("data")
+    .select("data, updated_at")
     .eq("id", CLOUD_STATE_ID)
     .maybeSingle();
 
@@ -274,6 +275,12 @@ async function loadCloudState() {
   }
 
   if (data?.data && Object.keys(data.data).length) {
+    const localTime = Date.parse(state.__localUpdatedAt || "");
+    const cloudTime = Date.parse(data.updated_at || data.data.__localUpdatedAt || "");
+    if (Number.isFinite(localTime) && (!Number.isFinite(cloudTime) || localTime > cloudTime + 1000)) {
+      await saveCloudState();
+      return;
+    }
     state = withStateDefaults({ ...clone(seed), ...data.data });
     selectedBookId = state.books[0]?.id || "";
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -285,12 +292,21 @@ async function loadCloudState() {
 
 function queueCloudSave() {
   if (!clubDb) return;
+  if (cloudSaveInFlight) {
+    cloudSavePending = true;
+    return;
+  }
   window.clearTimeout(cloudSaveTimer);
   cloudSaveTimer = window.setTimeout(saveCloudState, 400);
 }
 
 async function saveCloudState() {
-  if (!clubDb || cloudSaveInFlight) return;
+  if (!clubDb) return true;
+  if (cloudSaveInFlight) {
+    cloudSavePending = true;
+    return false;
+  }
+  window.clearTimeout(cloudSaveTimer);
   cloudSaveInFlight = true;
   const payload = clone(state);
   delete payload.__cloudError;
@@ -303,7 +319,15 @@ async function saveCloudState() {
       updated_at: new Date().toISOString(),
     });
   cloudSaveInFlight = false;
-  if (error) console.warn("Nao foi possivel salvar no Supabase", error);
+  if (error) {
+    console.warn("Nao foi possivel salvar no Supabase", error);
+    return false;
+  }
+  if (cloudSavePending) {
+    cloudSavePending = false;
+    return saveCloudState();
+  }
+  return true;
 }
 
 function ensureClubUser(authUser, signupData = null) {
@@ -372,6 +396,7 @@ function loadState() {
 
 function saveState() {
   state.__version = APP_VERSION;
+  state.__localUpdatedAt = new Date().toISOString();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   queueCloudSave();
 }
@@ -1134,6 +1159,10 @@ async function saveBook(event) {
   }
   bookFormMode = null;
   saveState();
+  const savedOnline = await saveCloudState();
+  if (!savedOnline) {
+    notify("Livro salvo neste aparelho. A sincronização online ainda está tentando concluir.");
+  }
   renderBooks();
 }
 
