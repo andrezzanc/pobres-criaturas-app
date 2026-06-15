@@ -1,4 +1,4 @@
-const CACHE_NAME = "pobres-criaturas-pwa-v11";
+const CACHE_NAME = "pobres-criaturas-pwa-v12";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -77,18 +77,22 @@ self.addEventListener("push", (event) => {
     self.registration.showNotification(data.title || "Pobres Criaturas", {
       body: data.body || "Nova notificação do clube.",
       icon: "./assets/icon-192.png",
-      badge: "./assets/icon-192.png"
+      badge: "./assets/icon-192.png",
+      data: {
+        url: data.url || "./"
+      }
     })
   );
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+  const targetUrl = event.notification.data?.url || "./";
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       const existing = clients.find((client) => "focus" in client);
       if (existing) return existing.focus();
-      return self.clients.openWindow("./index.html");
+      return self.clients.openWindow(targetUrl);
     })
   );
 });

@@ -1770,7 +1770,8 @@ function renderNotificationPanel() {
   notificationPanel.querySelector("[data-test-push]")?.addEventListener("click", () => {
     state.notificationSettings.pushEnabled = true;
     saveState();
-    sendPushPrototype("Teste do Pobres Criaturas", "Se este aviso apareceu, este aparelho permite notificações locais do app.");
+    sendClubPush("Teste do Pobres Criaturas", "Se este aviso apareceu, o push real chegou neste aparelho.", "test");
+    notify("Teste de push enviado.");
   });
   notificationPanel.querySelector("[data-mark-read]")?.addEventListener("click", markNotificationsRead);
   notificationPanel.querySelector("[data-close-notifications]")?.addEventListener("click", () => closeNotificationPanel());
@@ -1885,7 +1886,7 @@ function createNotification({ type, title, message, push = false }) {
   saveState();
   updateNotificationBadge();
   if (!notificationPanel.classList.contains("hidden")) renderNotificationPanel();
-  if (push) sendPushPrototype(title, message);
+  if (push) sendClubPush(title, message, type);
 }
 
 async function enablePushPrototype() {
@@ -1893,10 +1894,18 @@ async function enablePushPrototype() {
     notify("Este navegador não oferece notificações do sistema.");
     return;
   }
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    notify("Este aparelho não oferece push web completo. A central interna continua funcionando.");
+    return;
+  }
   if (Notification.permission === "granted") {
     state.notificationSettings.pushEnabled = true;
     saveState();
-    sendPushPrototype("Notificações ativadas", "O Pobres Criaturas vai avisar sobre livros e reuniões quando este aparelho permitir.");
+    const registered = await registerPushSubscription();
+    if (registered) {
+      notify("Push real ativado neste aparelho.");
+      sendPushPrototype("Notificações ativadas", "O Pobres Criaturas vai avisar sobre livros e reuniões.");
+    }
     renderNotificationPanel();
     return;
   }
@@ -1908,11 +1917,70 @@ async function enablePushPrototype() {
   state.notificationSettings.pushEnabled = permission === "granted";
   saveState();
   if (permission === "granted") {
-    sendPushPrototype("Notificações ativadas", "Você receberá alertas do clube quando este aparelho permitir.");
+    const registered = await registerPushSubscription();
+    if (registered) {
+      notify("Push real ativado neste aparelho.");
+      sendPushPrototype("Notificações ativadas", "Você receberá alertas do clube neste aparelho.");
+    }
   } else {
     notify("Sem permissão de push. A central interna continua funcionando.");
   }
   renderNotificationPanel();
+}
+
+async function registerPushSubscription() {
+  try {
+    const publicKey = supabaseSettings.vapidPublicKey;
+    if (!publicKey) {
+      notify("Chave publica de push ausente no app.");
+      return false;
+    }
+    const registration = await navigator.serviceWorker.ready;
+    const existing = await registration.pushManager.getSubscription();
+    const subscription = existing || await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey),
+    });
+    const token = await accessToken();
+    if (!token) {
+      notify("Entre novamente para ativar push.");
+      return false;
+    }
+    const response = await fetch("./api/register-push", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ subscription: subscription.toJSON() }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return true;
+  } catch (error) {
+    console.warn("Nao foi possivel registrar push", error);
+    notify("Não consegui registrar este aparelho para push real.");
+    return false;
+  }
+}
+
+async function sendClubPush(title, message, type) {
+  if (!state.notificationSettings?.pushEnabled) return;
+  try {
+    const token = await accessToken();
+    if (!token) throw new Error("Sessao ausente");
+    const response = await fetch("./api/send-push", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ title, message, type }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+  } catch (error) {
+    console.warn("Push real falhou; usando aviso local", error);
+    sendPushPrototype(title, message);
+  }
 }
 
 async function sendPushPrototype(title, message) {
@@ -1935,6 +2003,19 @@ async function sendPushPrototype(title, message) {
   } catch {
     notify("Notificação do aparelho indisponível agora; o aviso ficou salvo na central do app.");
   }
+}
+
+async function accessToken() {
+  if (!clubDb) return "";
+  const { data } = await clubDb.auth.getSession();
+  return data.session?.access_token || "";
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = "=".repeat((4 - value.length % 4) % 4);
+  const base64 = `${value}${padding}`.replace(/-/g, "+").replace(/_/g, "/");
+  const raw = window.atob(base64);
+  return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
 }
 
 function markNotificationsRead() {
@@ -1972,7 +2053,7 @@ function pushButtonLabel() {
 function pushHelpText() {
   if (!("Notification" in window)) return "A central interna funciona, mas este navegador não oferece push.";
   if (location.protocol === "file:") return "Neste protótipo local, o aviso depende da permissão do navegador. No app publicado, ele tenta usar a notificação do aparelho.";
-  return "Nesta versão, os avisos ficam na central do app e tentam aparecer neste aparelho. Notificação automática com o app fechado, inclusive para mudanças feitas por outras integrantes, entra na próxima etapa de push real com servidor.";
+  return "Com push real ativo, este aparelho recebe avisos de livros, reuniões e lembretes mesmo quando o app estiver fechado, desde que o sistema permita.";
 }
 
 function checkMeetingReminders() {
