@@ -59,6 +59,7 @@ let cloudSaveInFlight = false;
 let cloudSavePending = false;
 let notificationHistoryOpen = false;
 
+const bootScreen = document.querySelector("#boot-screen");
 const authScreen = document.querySelector("#auth-screen");
 const appShell = document.querySelector("#app-shell");
 const viewRoot = document.querySelector("#view-root");
@@ -140,8 +141,7 @@ document.querySelector("#logout-button").addEventListener("click", () => {
   if (clubDb) clubDb.auth.signOut();
   localStorage.removeItem(SESSION_KEY);
   session = null;
-  authScreen.classList.remove("hidden");
-  appShell.classList.add("hidden");
+  showAuth();
 });
 
 notificationButton.addEventListener("click", toggleNotificationPanel);
@@ -189,6 +189,7 @@ async function initApp() {
     showApp();
   } else {
     localStorage.removeItem(SESSION_KEY);
+    showAuth();
   }
 }
 
@@ -424,6 +425,7 @@ function startSession(user) {
 
 function showApp() {
   const user = getUser();
+  bootScreen.classList.add("hidden");
   authScreen.classList.add("hidden");
   appShell.classList.remove("hidden");
   document.querySelector("#session-name").textContent = user.name;
@@ -431,6 +433,12 @@ function showApp() {
   checkMeetingReminders();
   updateNotificationBadge();
   setView(currentView);
+}
+
+function showAuth() {
+  bootScreen.classList.add("hidden");
+  appShell.classList.add("hidden");
+  authScreen.classList.remove("hidden");
 }
 
 function setView(view) {
