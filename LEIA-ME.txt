@@ -1,0 +1,47 @@
+Pobres Criaturas - Passaporte de Leitura
+
+Como abrir:
+1. Abra o arquivo index.html desta pasta em qualquer navegador moderno.
+2. Clique em Cadastrar na primeira vez. Nao ha confirmacao por e-mail.
+3. Responda as perguntas do cadastro para o app gerar sua frase de perfil.
+4. Depois de entrar, teste as abas Inicio, Passaporte, Livros, Feed, Ordem e Regras, Favoritos, Estatisticas e Perfil.
+
+Como testar como PWA:
+1. Para instalar/offline funcionar, abra por um endereco http/https, nao pelo arquivo file://.
+2. Em desenvolvimento, rode um servidor local na pasta do app e abra http://127.0.0.1:8765.
+3. No Android/Chrome, o botao Instalar app aparece quando o navegador liberar a instalacao.
+4. No iPhone/Safari, use Compartilhar > Adicionar a Tela de Inicio.
+
+O que esta salvo:
+- Cadastro, reuniao, avaliacoes, favoritos, feed, progresso e perfil ficam salvos no proprio navegador.
+- As integrantes aparecem no passaporte conforme se cadastram.
+- Livros passados, atuais ou futuros podem ser cadastrados pelo botao Cadastrar livro, com mes, ano, indicadora e capa.
+- Para alterar informacoes ou capa de um livro, abra o livro e clique em Editar livro.
+- Para avaliar, clique em Criar avaliacao. Depois de salva, apenas a propria participante ve a opcao Editar avaliacao para a avaliacao dela.
+- A nota aceita decimais de 0 a 5, com virgula ou ponto, por exemplo 0,2, 2,5 ou 3,8.
+- A avaliacao tem dois campos: 3 palavras para descrever o livro e uma resenha mais profunda.
+- No feed, clique em Fazer historico de leitura para abrir os campos de progresso/comentario.
+- Na tela Inicio, Leitura em destaque usa o livro mais recente cadastrado por mes/ano.
+- O Carimbo atual usa o ultimo livro que a participante atualizou no feed.
+- As estatisticas separam livros lidos no ano atual e livros lidos ao todo no clube.
+- A aba Ordem e Regras mostra a ordem de indicacao e permite subir/descer integrantes, alem de editar o texto das regras.
+- O botao Notificacoes abre a central de avisos do clube.
+- A central registra reuniao criada/alterada, livro cadastrado, avaliacao, historico de leitura e lembretes de reuniao.
+- O botao Ativar push usa as notificacoes do navegador neste prototipo.
+- O service worker ja possui a base para push real; para enviar push para varias participantes com o app fechado, o proximo passo e publicar com backend e chaves de push.
+- Para testar foto de participante, entre em Perfil e envie uma imagem no campo Foto da integrante.
+
+Observacao:
+Esta e uma primeira versao navegavel/prototipo local. Para transformar em aplicativo publicado com login real em nuvem, o proximo passo e conectar banco de dados e hospedagem.
+
+Etapa 7 - Conectar ao Supabase:
+1. No Supabase, abra SQL Editor.
+2. Clique em New query.
+3. Cole o conteudo do arquivo supabase-step7.sql.
+4. Clique em Run.
+5. Depois de aparecer Success, o app ja esta com a URL e a chave publica no arquivo supabase-config.js.
+6. Para testar o login real, abra o app por um endereco http/https. O modo file:// continua funcionando como prototipo local, mas o app publicado e o teste por servidor local conseguem usar Supabase melhor.
+7. Se o cadastro disser que precisa confirmar e-mail, va em Authentication > Providers > Email e desligue Confirm email.
+
+Observacao da primeira conexao:
+Nesta etapa inicial, o app salva o estado do clube em uma tabela chamada club_state. Isso ja permite testar login real e dados compartilhados entre aparelhos. Depois, podemos evoluir para salvar cada parte em sua propria tabela, o que e melhor para um app grande e definitivo.

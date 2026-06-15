@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#8f3f20" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Pobres Criaturas" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>Pobres Criaturas | Passaporte de Leitura</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main id="auth-screen" class="auth-screen">
+      <section class="auth-brand" aria-label="Pobres Criaturas">
+        <img src="./assets/logo-pobres-criaturas.png" alt="Logo Pobres Criaturas" />
+        <p class="eyebrow">República Federativa do Livro</p>
+        <h1>Passaporte de Leitura</h1>
+        <p>
+          Um cantinho do clube para combinar reunião, registrar progresso,
+          guardar favoritos e transformar cada leitura em memória compartilhada.
+        </p>
+      </section>
+
+      <section class="auth-card" aria-label="Entrar ou cadastrar">
+        <div class="auth-tabs">
+          <button class="auth-tab active" data-auth-mode="login">Entrar</button>
+          <button class="auth-tab" data-auth-mode="signup">Cadastrar</button>
+        </div>
+
+        <form id="auth-form">
+          <label>
+            <span>Nome</span>
+            <input id="auth-name" type="text" autocomplete="name" placeholder="Seu nome no clube" />
+          </label>
+          <label>
+            <span>E-mail</span>
+            <input id="auth-email" type="email" autocomplete="email" placeholder="voce@email.com" required />
+          </label>
+          <label>
+            <span>Senha</span>
+            <input id="auth-password" type="password" autocomplete="current-password" placeholder="Sem confirmação por e-mail" required />
+          </label>
+          <div id="signup-questions" class="signup-questions">
+            <label>
+              <span>Qual clima de leitura mais combina com você?</span>
+              <select id="auth-personality">
+                <option value="teorias">Faço teorias e suspeito de todo mundo</option>
+                <option value="emocao">Leio com emoção e marco frases</option>
+                <option value="fantasia">Amo mundos estranhos e fantasia</option>
+                <option value="critica">Sou criteriosa com estrelas</option>
+                <option value="romance">Gosto de romances e personagens intensos</option>
+              </select>
+            </label>
+            <label>
+              <span>Gênero favorito</span>
+              <input id="auth-genre" type="text" placeholder="Suspense, romance, fantasia..." />
+            </label>
+            <label>
+              <span>Na reunião, você costuma...</span>
+              <select id="auth-discussion">
+                <option value="investigar">chegar com teorias e marcações</option>
+                <option value="sentir">falar do que sentiu lendo</option>
+                <option value="debater">debater finais, personagens e escolhas</option>
+                <option value="ouvir">ouvir tudo antes de dar o veredito</option>
+              </select>
+            </label>
+            <label>
+              <span>Quantos livros você já leu neste ano?</span>
+              <input id="auth-read-year" type="number" min="0" value="0" />
+            </label>
+            <label>
+              <span>Quantos livros você já leu no clube?</span>
+              <input id="auth-read-club" type="number" min="0" value="0" />
+            </label>
+            <label>
+              <span>Meta de livros no ano</span>
+              <input id="auth-goal" type="number" min="1" value="12" />
+            </label>
+          </div>
+          <button class="primary-button" type="submit">Abrir meu passaporte</button>
+          <p id="auth-message" class="form-message" role="status"></p>
+        </form>
+      </section>
+    </main>
+
+    <main id="app-shell" class="app-shell hidden">
+      <aside class="sidebar">
+        <div class="brand-lockup">
+          <img src="./assets/logo-pobres-criaturas.png" alt="Pobres Criaturas" />
+          <div>
+            <strong>Pobres Criaturas</strong>
+            <span>Passaporte digital</span>
+          </div>
+        </div>
+        <nav class="nav-list" aria-label="Navegação principal">
+          <button class="nav-item active" data-view="home">Início</button>
+          <button class="nav-item" data-view="passport">Passaporte</button>
+          <button class="nav-item" data-view="books">Livros</button>
+          <button class="nav-item" data-view="feed">Feed</button>
+          <button class="nav-item" data-view="rules">Ordem e Regras</button>
+          <button class="nav-item" data-view="favorites">Favoritos</button>
+          <button class="nav-item" data-view="stats">Estatísticas</button>
+          <button class="nav-item" data-view="profile">Perfil</button>
+        </nav>
+      </aside>
+
+      <section class="content-shell">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Clube do Livro</p>
+            <h2 id="view-title">Início</h2>
+          </div>
+          <div class="topbar-actions">
+            <button id="notification-button" class="notification-button" type="button" aria-label="Abrir notificações">
+              <span>Notificações</span>
+              <strong id="notification-count">0</strong>
+            </button>
+            <button id="install-button" class="install-button hidden" type="button">Instalar app</button>
+            <div class="user-chip">
+              <span id="session-initials">PC</span>
+              <div>
+                <strong id="session-name">Leitora</strong>
+                <button id="logout-button" type="button">Sair</button>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <section id="notification-panel" class="notification-panel hidden" aria-label="Notificações"></section>
+        <div id="toast" class="toast" role="status"></div>
+        <section id="view-root" class="view-root" aria-live="polite"></section>
+      </section>
+
+      <nav class="bottom-nav" aria-label="Navegação inferior">
+        <button class="nav-item active" data-view="home">Início</button>
+        <button class="nav-item" data-view="passport">Clube</button>
+        <button class="nav-item" data-view="books">Livros</button>
+        <button class="nav-item" data-view="feed">Feed</button>
+        <button class="nav-item" data-view="rules">Regras</button>
+        <button class="nav-item" data-view="stats">Stats</button>
+      </nav>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="./supabase-config.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
