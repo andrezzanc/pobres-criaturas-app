@@ -46,7 +46,7 @@ let state = loadState();
 let session = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
 let authMode = "login";
 let currentView = "home";
-let selectedBookId = state.books[0]?.id || "";
+let selectedBookId = latestBook()?.id || "";
 let meetingEditing = false;
 let bookFormMode = null;
 let feedComposerOpen = false;
@@ -159,7 +159,13 @@ installButton.addEventListener("click", async () => {
 });
 
 document.querySelectorAll(".nav-item").forEach((button) => {
-  button.addEventListener("click", () => setView(button.dataset.view));
+  button.addEventListener("click", () => {
+    if (button.dataset.view === "books") {
+      openBooks();
+      return;
+    }
+    setView(button.dataset.view);
+  });
 });
 
 window.addEventListener("popstate", () => {
@@ -283,7 +289,7 @@ async function loadCloudState() {
       return;
     }
     state = withStateDefaults({ ...clone(seed), ...data.data });
-    selectedBookId = state.books[0]?.id || "";
+    selectedBookId = latestBook()?.id || "";
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     return;
   }
@@ -468,6 +474,13 @@ function setView(view) {
   renderers[view]();
 }
 
+function openBooks(bookId = "") {
+  selectedBookId = bookId || latestBook()?.id || "";
+  reviewFormOpen = false;
+  bookFormMode = null;
+  setView("books");
+}
+
 function getUser() {
   return state.users.find((user) => user.email === session?.email);
 }
@@ -578,6 +591,10 @@ function renderHome() {
       ${quickStat("Livros lidos no ano", String(totalReadCurrentYear()), String(new Date().getFullYear()))}
       ${quickStat("Livros lidos no clube", String(totalReadInClub()), "desde a entrada das integrantes")}
     </section>
+
+    <section class="mobile-shortcuts">
+      <button class="secondary-button" type="button" data-jump="stats">Ver estatísticas</button>
+    </section>
   `;
 
   document.querySelector("[data-edit-meeting]")?.addEventListener("click", () => {
@@ -589,7 +606,8 @@ function renderHome() {
     meetingEditing = false;
     renderHome();
   });
-  document.querySelector("[data-jump='books']")?.addEventListener("click", () => setView("books"));
+  document.querySelector("[data-jump='books']")?.addEventListener("click", () => openBooks());
+  document.querySelector("[data-jump='stats']")?.addEventListener("click", () => setView("stats"));
 }
 
 function meetingSummary() {
@@ -654,7 +672,8 @@ function renderPassport() {
 }
 
 function renderBooks() {
-  const selected = bookById(selectedBookId) || state.books[0];
+  const selected = bookById(selectedBookId) || latestBook();
+  if (selected) selectedBookId = selected.id;
   viewRoot.innerHTML = `
     <section class="panel compact-panel">
       <div class="section-heading">
@@ -994,8 +1013,7 @@ function renderFavorites() {
   `;
   document.querySelectorAll("[data-open-book]").forEach((button) => {
     button.addEventListener("click", () => {
-      selectedBookId = button.dataset.openBook;
-      setView("books");
+      openBooks(button.dataset.openBook);
     });
   });
 }
