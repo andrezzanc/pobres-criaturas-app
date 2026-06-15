@@ -1709,11 +1709,20 @@ function renderNotificationPanel() {
   notificationPanel.querySelector("[data-mark-read]")?.addEventListener("click", markNotificationsRead);
 }
 
-function registerPwa() {
+async function registerPwa() {
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
-    navigator.serviceWorker.register("./sw.js").catch(() => {
-      notify("Modo offline indisponível neste navegador.");
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (refreshing) return;
+      refreshing = true;
+      window.location.reload();
     });
+    navigator.serviceWorker
+      .register("./sw.js")
+      .then((registration) => registration.update())
+      .catch(() => {
+        notify("Modo offline indisponível neste navegador.");
+      });
   }
 
   window.addEventListener("beforeinstallprompt", (event) => {
