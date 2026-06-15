@@ -307,11 +307,16 @@ select:focus {
 }
 
 .topbar {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
   margin-bottom: 20px;
+}
+
+.mobile-top-logo {
+  display: none;
 }
 
 .topbar-actions {
@@ -437,6 +442,20 @@ select:focus {
   border-radius: var(--radius);
   background: rgba(255, 250, 240, 0.96);
   box-shadow: var(--shadow);
+}
+
+.notification-panel .section-heading {
+  align-items: start;
+}
+
+.notification-close {
+  min-width: 42px;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: rgba(255, 250, 240, 0.9);
+  color: var(--ink);
+  font-weight: 900;
 }
 
 .notification-list {
@@ -1131,11 +1150,27 @@ select:focus {
 
   .topbar {
     align-items: flex-start;
+    min-height: 206px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .topbar-actions {
     width: 100%;
     justify-content: space-between;
+    align-self: end;
+    max-width: 330px;
+  }
+
+  .mobile-top-logo {
+    display: block;
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: min(190px, 42vw);
+    max-height: 150px;
+    object-fit: contain;
+    filter: drop-shadow(0 12px 18px rgba(44, 33, 24, 0.12));
   }
 
   .user-chip {
@@ -1156,8 +1191,20 @@ select:focus {
   }
 
   .notification-panel {
-    top: 84px;
-    right: 14px;
+    inset: 78px 14px 90px;
+    width: auto;
+    max-height: none;
+    padding: 18px;
+    border-radius: 10px;
+  }
+
+  .notification-panel .section-heading {
+    gap: 12px;
+  }
+
+  .notification-panel .button-row {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .passport-meta,

@@ -56,6 +56,7 @@ let rulesEditing = false;
 let reviewFormOpen = false;
 let cloudSaveTimer = null;
 let cloudSaveInFlight = false;
+let notificationHistoryOpen = false;
 
 const authScreen = document.querySelector("#auth-screen");
 const appShell = document.querySelector("#app-shell");
@@ -142,10 +143,7 @@ document.querySelector("#logout-button").addEventListener("click", () => {
   appShell.classList.add("hidden");
 });
 
-notificationButton.addEventListener("click", () => {
-  notificationPanel.classList.toggle("hidden");
-  renderNotificationPanel();
-});
+notificationButton.addEventListener("click", toggleNotificationPanel);
 
 installButton.addEventListener("click", async () => {
   if (installPromptEvent) {
@@ -161,6 +159,12 @@ installButton.addEventListener("click", async () => {
 
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", () => setView(button.dataset.view));
+});
+
+window.addEventListener("popstate", () => {
+  if (!notificationPanel.classList.contains("hidden")) {
+    closeNotificationPanel(false);
+  }
 });
 
 initApp();
@@ -1697,7 +1701,9 @@ function renderNotificationPanel() {
       </div>
       <div class="button-row">
         <button class="secondary-button" type="button" data-enable-push>${pushButtonLabel()}</button>
+        ${"Notification" in window && Notification.permission === "granted" ? `<button class="ghost-button" type="button" data-test-push>Testar aviso</button>` : ""}
         <button class="ghost-button" type="button" data-mark-read>Marcar lidas</button>
+        <button class="notification-close" type="button" data-close-notifications aria-label="Fechar notificações">×</button>
       </div>
     </div>
     <p class="muted">${pushHelpText()}</p>
@@ -1706,7 +1712,38 @@ function renderNotificationPanel() {
     </div>
   `;
   notificationPanel.querySelector("[data-enable-push]")?.addEventListener("click", enablePushPrototype);
+  notificationPanel.querySelector("[data-test-push]")?.addEventListener("click", () => {
+    state.notificationSettings.pushEnabled = true;
+    saveState();
+    sendPushPrototype("Teste do Pobres Criaturas", "Se este aviso apareceu, este aparelho permite notificações locais do app.");
+  });
   notificationPanel.querySelector("[data-mark-read]")?.addEventListener("click", markNotificationsRead);
+  notificationPanel.querySelector("[data-close-notifications]")?.addEventListener("click", () => closeNotificationPanel());
+}
+
+function toggleNotificationPanel() {
+  if (notificationPanel.classList.contains("hidden")) {
+    openNotificationPanel();
+  } else {
+    closeNotificationPanel();
+  }
+}
+
+function openNotificationPanel() {
+  renderNotificationPanel();
+  notificationPanel.classList.remove("hidden");
+  if (!notificationHistoryOpen) {
+    notificationHistoryOpen = true;
+    window.history.pushState({ notificationPanel: true }, "", window.location.href);
+  }
+}
+
+function closeNotificationPanel(useHistory = true) {
+  notificationPanel.classList.add("hidden");
+  notificationHistoryOpen = false;
+  if (useHistory && window.history.state?.notificationPanel) {
+    window.history.back();
+  }
 }
 
 async function registerPwa() {
@@ -1880,7 +1917,7 @@ function pushButtonLabel() {
 function pushHelpText() {
   if (!("Notification" in window)) return "A central interna funciona, mas este navegador não oferece push.";
   if (location.protocol === "file:") return "Neste protótipo local, o aviso depende da permissão do navegador. No app publicado, ele tenta usar a notificação do aparelho.";
-  return "Nesta versão, os avisos ficam na central do app e tentam aparecer no aparelho quando ele permite. Push real com o app fechado para todas as participantes entra na próxima etapa de servidor.";
+  return "Nesta versão, os avisos ficam na central do app e tentam aparecer neste aparelho. Notificação automática com o app fechado, inclusive para mudanças feitas por outras integrantes, entra na próxima etapa de push real com servidor.";
 }
 
 function checkMeetingReminders() {
