@@ -1,4 +1,4 @@
-const CACHE_NAME = "pobres-criaturas-pwa-v32";
+const CACHE_NAME = "pobres-criaturas-pwa-v33";
 const APP_SHELL = [
   "./",
   "./index.html",

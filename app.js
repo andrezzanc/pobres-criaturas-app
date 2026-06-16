@@ -1,11 +1,22 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 16;
+const APP_VERSION = 18;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
   ? window.supabase.createClient(supabaseSettings.url, supabaseSettings.publishableKey)
   : null;
+const TABLE_CONFLICTS = {
+  club_state: "id",
+  club_members: "user_id",
+  club_meeting: "id",
+  club_books: "id",
+  club_settings: "id",
+  club_reviews: "book_id,participant_id",
+  club_member_library: "participant_id",
+  club_feed: "id",
+  club_notifications: "id",
+};
 
 const seed = {
   __version: APP_VERSION,
@@ -452,9 +463,10 @@ async function saveCloudSnapshot() {
 }
 
 async function saveRecordOnServer(table, payload) {
+  let serverError = "";
   try {
     const token = await accessToken();
-    if (!token) return { ok: false, error: "sessao ausente" };
+    if (!token) return saveRecordDirect(table, payload, "sessao ausente");
     const response = await fetch("./api/save-record", {
       method: "POST",
       headers: {
@@ -470,19 +482,39 @@ async function saveRecordOnServer(table, payload) {
       body = { error: await response.text() };
     }
     if (!response.ok || !body?.ok) {
-      return { ok: false, error: body?.error || "servidor nao confirmou o salvamento" };
+      serverError = body?.error || "servidor nao confirmou o salvamento";
+      return saveRecordDirect(table, payload, serverError);
     }
     return { ok: true, data: body.data || null };
   } catch (error) {
     console.warn("Servidor de salvamento indisponivel", error);
-    return { ok: false, error: error.message || "servidor de salvamento indisponivel" };
+    serverError = error.message || "servidor de salvamento indisponivel";
+    return saveRecordDirect(table, payload, serverError);
+  }
+}
+
+async function saveRecordDirect(table, payload, serverError = "") {
+  if (!clubDb || !TABLE_CONFLICTS[table]) return { ok: false, error: serverError || "Supabase indisponivel" };
+  try {
+    const { data, error } = await clubDb
+      .from(table)
+      .upsert(payload, { onConflict: TABLE_CONFLICTS[table] })
+      .select("*")
+      .maybeSingle();
+    if (error) {
+      return { ok: false, error: serverError ? `${serverError}; fallback: ${error.message}` : error.message };
+    }
+    return { ok: true, data: data || payload };
+  } catch (error) {
+    return { ok: false, error: serverError ? `${serverError}; fallback: ${error.message}` : error.message };
   }
 }
 
 async function loadRecordsFromServer(table) {
+  let serverError = "";
   try {
     const token = await accessToken();
-    if (!token) return { ok: false, error: "sessao ausente", data: [] };
+    if (!token) return loadRecordsDirect(table, "sessao ausente");
     const response = await fetch(`./api/load-records?table=${encodeURIComponent(table)}`, {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -495,12 +527,27 @@ async function loadRecordsFromServer(table) {
       body = { error: await response.text() };
     }
     if (!response.ok || !body?.ok) {
-      return { ok: false, error: body?.error || "servidor nao confirmou a sincronizacao", data: [] };
+      serverError = body?.error || "servidor nao confirmou a sincronizacao";
+      return loadRecordsDirect(table, serverError);
     }
     return { ok: true, data: Array.isArray(body.data) ? body.data : [] };
   } catch (error) {
     console.warn("Servidor de sincronizacao indisponivel", error);
-    return { ok: false, error: error.message || "servidor de sincronizacao indisponivel", data: [] };
+    serverError = error.message || "servidor de sincronizacao indisponivel";
+    return loadRecordsDirect(table, serverError);
+  }
+}
+
+async function loadRecordsDirect(table, serverError = "") {
+  if (!clubDb || !TABLE_CONFLICTS[table]) return { ok: false, error: serverError || "Supabase indisponivel", data: [] };
+  try {
+    const { data, error } = await clubDb.from(table).select("*");
+    if (error) {
+      return { ok: false, error: serverError ? `${serverError}; fallback: ${error.message}` : error.message, data: [] };
+    }
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    return { ok: false, error: serverError ? `${serverError}; fallback: ${error.message}` : error.message, data: [] };
   }
 }
 
@@ -873,7 +920,10 @@ async function loadNotificationRecords() {
   }
   const data = result.data.slice().sort((a, b) => Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0)).slice(0, 40);
   if (!data?.length) return false;
-  const localReads = new Set((state.notifications || []).filter((item) => item.read).map((item) => item.id));
+  const localReads = new Set([
+    ...notificationReadIds(),
+    ...(state.notifications || []).filter((item) => item.read).map((item) => item.id),
+  ]);
   const officialNotifications = (data || []).map((row) => ({
     id: row.id,
     type: row.type || "",
@@ -883,6 +933,7 @@ async function loadNotificationRecords() {
     read: localReads.has(row.id),
   }));
   state.notifications = mergeById(officialNotifications, state.notifications, lastCloudState?.notifications).sort(sortNewestFirst).slice(0, 40);
+  applyNotificationReadState();
   return true;
 }
 
@@ -1366,6 +1417,7 @@ function withStateDefaults(value) {
   value.notificationSettings ||= {};
   value.notificationSettings.pushEnabled ||= false;
   value.notificationSettings.reminders ||= {};
+  value.notificationSettings.readNotificationIds ||= [];
   value.indicationOrder ||= [];
   value.feed ||= [];
   value.feed.forEach((item) => {
@@ -2945,6 +2997,7 @@ function createNotification({ type, title, message, push = false }) {
   state.notifications ||= [];
   state.notifications.unshift(item);
   state.notifications = state.notifications.slice(0, 40);
+  applyNotificationReadState();
   saveNotificationRecord(item);
   persistLocalState();
   updateNotificationBadge();
@@ -3099,18 +3152,39 @@ function urlBase64ToUint8Array(value) {
 }
 
 function markNotificationsRead() {
+  const ids = new Set(notificationReadIds());
   (state.notifications || []).forEach((item) => {
     item.read = true;
+    if (item.id) ids.add(item.id);
   });
+  state.notificationSettings ||= {};
+  state.notificationSettings.readNotificationIds = [...ids].slice(-200);
   persistLocalState();
   updateNotificationBadge();
   renderNotificationPanel();
+  saveCloudSnapshot();
 }
 
 function updateNotificationBadge() {
+  applyNotificationReadState();
   const count = (state.notifications || []).filter((item) => !item.read).length;
   notificationCount.textContent = String(count);
   notificationButton.classList.toggle("has-unread", count > 0);
+}
+
+function notificationReadIds() {
+  state.notificationSettings ||= {};
+  if (!Array.isArray(state.notificationSettings.readNotificationIds)) {
+    state.notificationSettings.readNotificationIds = [];
+  }
+  return state.notificationSettings.readNotificationIds;
+}
+
+function applyNotificationReadState() {
+  const ids = new Set(notificationReadIds());
+  (state.notifications || []).forEach((item) => {
+    if (ids.has(item.id)) item.read = true;
+  });
 }
 
 function notificationLabel(type) {
@@ -3196,7 +3270,21 @@ function clone(value) {
 function readPhoto(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.addEventListener("load", () => resolve(reader.result));
+    reader.addEventListener("load", () => {
+      const image = new Image();
+      image.addEventListener("load", () => {
+        const maxSide = 900;
+        const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        const context = canvas.getContext("2d");
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      });
+      image.addEventListener("error", () => resolve(reader.result));
+      image.src = reader.result;
+    });
     reader.addEventListener("error", reject);
     reader.readAsDataURL(file);
   });
