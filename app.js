@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 19;
+const APP_VERSION = 20;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -702,7 +702,17 @@ async function saveBookRecord(book) {
     reportCloudSaveError("livro", { message: saved.error });
     return false;
   }
+  if (saved.data) {
+    const confirmedBook = bookFromRecord(saved.data);
+    state.books = mergeById([confirmedBook], state.books.filter((item) => item.id !== confirmedBook.id), lastCloudState?.books);
+    state.reviews[confirmedBook.id] ||= [];
+    selectedBookId = confirmedBook.id;
+  }
   await loadBookRecords();
+  if (!bookById(book.id)) {
+    state.books.push(book);
+    selectedBookId = book.id;
+  }
   persistLocalState();
   await saveCloudSnapshot();
   return true;
@@ -1064,7 +1074,6 @@ async function verifyMemberProfileSaved(authUser, participant) {
   if ((profile.name || "") !== (participant.name || "")) differences.push("nome");
   if ((profile.favorite_book || "") !== (participant.favoriteBook || "")) differences.push("livro favorito");
   if ((profile.favorite_character || "") !== (participant.favoriteCharacter || "")) differences.push("personagem favorito");
-  if ((profile.quote || "") !== (participant.quote || "")) differences.push("citacao");
   if (Number(profile.goal || 0) !== Number(participant.goal || 0)) differences.push("meta");
   if (stableJson(normalizeList(profile.genres)) !== stableJson(normalizeList(participant.genres))) differences.push("generos");
   if (Number(profile.books_read_year || 0) !== Number(participant.booksReadYear || 0)) differences.push("lidos no ano");
@@ -1137,6 +1146,7 @@ function mergeMemberProfiles(rows = []) {
 }
 
 function participantFromMemberRow(row) {
+  const memberName = row.name || row.email?.split("@")[0] || "Integrante";
   const profile = {
     personality: row.personality || "emocao",
     genre: Array.isArray(row.genres) && row.genres.length ? row.genres[0] : "Leituras surpresa",
@@ -1147,8 +1157,8 @@ function participantFromMemberRow(row) {
   };
   return {
     id: row.participant_id || row.user_id,
-    name: row.name || row.email?.split("@")[0] || "Integrante",
-    role: row.role || generateRole(profile),
+    name: memberName,
+    role: generateRole(profile, memberName),
     tone: row.tone || toneFor(profile.personality),
     favoriteBook: row.favorite_book || "Ainda escolhendo",
     favoriteCharacter: row.favorite_character || "Ainda escolhendo",
@@ -1506,7 +1516,7 @@ function createParticipant(name, profile, preferredId = "") {
   return {
     id,
     name,
-    role: generateRole(profile),
+    role: generateRole(profile, name),
     tone: toneFor(profile.personality),
     favoriteBook: "Ainda escolhendo",
     favoriteCharacter: "Ainda escolhendo",
@@ -1520,7 +1530,8 @@ function createParticipant(name, profile, preferredId = "") {
   };
 }
 
-function generateRole(profile) {
+function generateRole(profile, name = "") {
+  return generateVariedRole(profile, name);
   const openings = {
     teorias: "Ministra das teorias impossíveis",
     emocao: "Curadora das leituras que deixam marca",
@@ -1535,6 +1546,32 @@ function generateRole(profile) {
     ouvir: "e dos vereditos precisos",
   };
   return `${openings[profile.personality]} ${endings[profile.discussion]}`;
+}
+
+function generateVariedRole(profile = {}, name = "") {
+  const openings = {
+    teorias: ["Ministra das teorias impossiveis", "Investigadora dos detalhes suspeitos", "Oraculista dos finais improvaveis"],
+    emocao: ["Curadora das leituras que deixam marca", "Guardia das frases que ficam", "Colecionadora de cenas que apertam o peito"],
+    fantasia: ["Cartografa dos mundos estranhos", "Viajante das terras impossiveis", "Embaixadora dos reinos inventados"],
+    critica: ["Auditora das estrelas dificeis", "Juiza das tramas bem amarradas", "Fiscal dos furos de roteiro"],
+    romance: ["Diplomata dos romances intensos", "Especialista em personagens dramaticos", "Conselheira dos coracoes literarios"],
+  };
+  const endings = {
+    investigar: ["e dos detalhes sublinhados", "com lupa nas pistas do capitulo", "que sempre suspeita de alguem"],
+    sentir: ["e das frases guardadas no peito", "que le com o coracao aberto", "dos surtos discretos no meio da leitura"],
+    debater: ["e dos debates sem hora para acabar", "que chega pronta para defender uma teoria", "das conversas que viram madrugada"],
+    ouvir: ["e dos vereditos precisos", "que escuta tudo antes do golpe final", "das opinioes calmas e certeiras"],
+  };
+  const genre = normalizeList(profile.genre || profile.genres?.[0] || "")[0] || "leituras surpresa";
+  const seedText = `${name}|${profile.personality}|${profile.discussion}|${genre}|${profile.booksReadYear || 0}|${profile.booksReadClub || 0}`;
+  const seed = hashText(seedText);
+  const openingList = openings[profile.personality] || openings.emocao;
+  const endingList = endings[profile.discussion] || endings.debater;
+  return `${openingList[seed % openingList.length]} ${endingList[Math.floor(seed / 3) % endingList.length]}`;
+}
+
+function hashText(text = "") {
+  return [...String(text)].reduce((hash, char) => ((hash * 31) + char.charCodeAt(0)) >>> 0, 7);
 }
 
 function toneFor(personality) {
@@ -2450,6 +2487,13 @@ async function saveProfile(event) {
   participant.goal = Number(data.get("goal") || 12);
   participant.genres = data.get("genres").split(",").map((item) => item.trim()).filter(Boolean);
   participant.quote = data.get("quote");
+  participant.role = generateRole({
+    personality: participant.personality,
+    discussion: participant.discussion,
+    genres: participant.genres,
+    booksReadYear: participant.booksReadYear,
+    booksReadClub: participant.booksReadClub,
+  }, participant.name);
   participant.profileUpdatedAt = new Date().toISOString();
   const photo = event.currentTarget.elements.photo.files[0];
   if (photo) participant.photo = await readPhoto(photo);
@@ -3275,14 +3319,14 @@ function readPhoto(file) {
     reader.addEventListener("load", () => {
       const image = new Image();
       image.addEventListener("load", () => {
-        const maxSide = 900;
+        const maxSide = 520;
         const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
         const canvas = document.createElement("canvas");
         canvas.width = Math.max(1, Math.round(image.width * scale));
         canvas.height = Math.max(1, Math.round(image.height * scale));
         const context = canvas.getContext("2d");
         context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL("image/jpeg", 0.82));
+        resolve(canvas.toDataURL("image/jpeg", 0.72));
       });
       image.addEventListener("error", () => resolve(reader.result));
       image.src = reader.result;
