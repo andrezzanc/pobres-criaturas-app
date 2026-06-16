@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 4;
+const APP_VERSION = 6;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -330,6 +330,7 @@ async function loadCloudState() {
 
   if (data) {
     applyCloudState(data.data || {}, data.updated_at);
+    await loadStructuredClubData();
     return true;
   }
 
@@ -348,22 +349,39 @@ function applyCloudState(cloudData, updatedAt = null) {
 async function refreshCloudState({ render = false } = {}) {
   if (!clubDb || !session || cloudRefreshInFlight) return false;
   cloudRefreshInFlight = true;
+  const structuredBefore = stableJson({
+    meeting: state.meeting,
+    books: state.books,
+    participants: state.participants,
+  });
+  await loadStructuredClubData();
   const { data, error } = await clubDb
     .from("club_state")
     .select("data, updated_at")
     .eq("id", CLOUD_STATE_ID)
     .maybeSingle();
   cloudRefreshInFlight = false;
-  if (error || !data) return false;
+  const structuredChanged = structuredBefore !== stableJson({
+    meeting: state.meeting,
+    books: state.books,
+    participants: state.participants,
+  });
+  if (error || !data) {
+    if (structuredChanged && render && appShell && !appShell.classList.contains("hidden")) showApp();
+    return structuredChanged;
+  }
   const remoteTime = Date.parse(data.updated_at || "");
   const knownTime = Date.parse(cloudUpdatedAt || "");
-  if (cloudUpdatedAt && remoteTime <= knownTime) return false;
+  if (cloudUpdatedAt && remoteTime <= knownTime) {
+    if (structuredChanged && render && appShell && !appShell.classList.contains("hidden")) showApp();
+    return structuredChanged;
+  }
 
   applyCloudState(data.data || {}, data.updated_at);
   const { data: authData } = await clubDb.auth.getSession();
   if (authData.session?.user) {
     ensureClubUser(authData.session.user);
-    await loadMemberProfiles();
+    await loadStructuredClubData();
     persistLocalState();
   }
   if (render && appShell && !appShell.classList.contains("hidden")) {
@@ -436,6 +454,416 @@ async function fetchCloudState() {
     return null;
   }
   return data;
+}
+
+async function loadStructuredClubData() {
+  if (!clubDb) return false;
+  const before = stableJson({
+    meeting: state.meeting,
+    books: state.books,
+    participants: state.participants,
+  });
+  await loadMemberProfiles();
+  await loadBookRecords();
+  await loadMeetingRecord();
+  await loadClubSettings();
+  await loadReviewRecords();
+  await loadMemberLibraryRecords();
+  await loadFeedRecords();
+  await loadNotificationRecords();
+  await migrateLegacyStateToTables();
+  persistLocalState();
+  return before !== stableJson({
+    meeting: state.meeting,
+    books: state.books,
+    participants: state.participants,
+  });
+}
+
+async function migrateLegacyStateToTables() {
+  if (!clubDb) return;
+  try {
+    if (state.meeting && (state.meeting.date || state.meeting.time || state.meeting.place || state.meeting.notes || state.meeting.bookId)) {
+      const { data } = await clubDb.from("club_meeting").select("date,time,book_id,place,notes").eq("id", "current").maybeSingle();
+      const hasMeeting = data?.date || data?.time || data?.book_id || data?.place || data?.notes;
+      if (!hasMeeting) await saveMeetingRecord();
+    }
+
+    const { data: bookRows } = await clubDb.from("club_books").select("id").limit(1);
+    if (!bookRows?.length && state.books?.length) {
+      for (const book of state.books) await saveBookRecord(book);
+    }
+
+    const { data: reviewRows } = await clubDb.from("club_reviews").select("book_id").limit(1);
+    if (!reviewRows?.length) {
+      for (const [bookId, reviews] of Object.entries(state.reviews || {})) {
+        for (const review of reviews || []) await saveReviewRecord(bookId, review);
+      }
+    }
+
+    const { data: libraryRows } = await clubDb.from("club_member_library").select("participant_id").limit(1);
+    if (!libraryRows?.length) {
+      for (const participant of state.participants || []) await saveMemberLibraryRecord(participant);
+    }
+
+    const { data: feedRows } = await clubDb.from("club_feed").select("id").limit(1);
+    if (!feedRows?.length) {
+      for (const item of state.feed || []) await saveFeedRecord(item);
+    }
+
+    const { data: settings } = await clubDb.from("club_settings").select("rules,indication_order").eq("id", "main").maybeSingle();
+    const hasSettings = settings?.rules || (Array.isArray(settings?.indication_order) && settings.indication_order.length);
+    if (!hasSettings && (state.rules || state.indicationOrder?.length)) await saveClubSettingsRecord();
+
+    const { data: notificationRows } = await clubDb.from("club_notifications").select("id").limit(1);
+    if (!notificationRows?.length) {
+      for (const item of (state.notifications || []).slice(0, 40)) await saveNotificationRecord(item);
+    }
+  } catch (error) {
+    console.warn("Migracao automatica para tabelas oficiais nao concluiu", error);
+  }
+}
+
+async function loadMeetingRecord() {
+  if (!clubDb) return false;
+  const { data, error } = await clubDb
+    .from("club_meeting")
+    .select("*")
+    .eq("id", "current")
+    .maybeSingle();
+  if (error) {
+    console.warn("Nao foi possivel carregar reuniao oficial", error);
+    return false;
+  }
+  if (!data) return false;
+  const hasMeeting = data.date || data.time || data.book_id || data.place || data.notes;
+  if (!hasMeeting) return false;
+  state.meeting = {
+    date: data.date || "",
+    time: data.time || "",
+    bookId: data.book_id || "",
+    place: data.place || "",
+    notes: data.notes || "",
+  };
+  return true;
+}
+
+async function saveMeetingRecord() {
+  if (!clubDb) return saveCloudState();
+  const { error } = await clubDb
+    .from("club_meeting")
+    .upsert({
+      id: "current",
+      date: state.meeting.date || "",
+      time: state.meeting.time || "",
+      book_id: state.meeting.bookId || "",
+      place: state.meeting.place || "",
+      notes: state.meeting.notes || "",
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "id" });
+  if (error) {
+    console.warn("Nao foi possivel salvar reuniao oficial", error);
+    notify("Ainda falta rodar o SQL de livros e reuniao no Supabase.");
+    return false;
+  }
+  saveCloudState();
+  return true;
+}
+
+async function loadBookRecords() {
+  if (!clubDb) return false;
+  const { data, error } = await clubDb
+    .from("club_books")
+    .select("*")
+    .order("year", { ascending: false })
+    .order("month_index", { ascending: false })
+    .order("created_at", { ascending: false });
+  if (error) {
+    console.warn("Nao foi possivel carregar livros oficiais", error);
+    return false;
+  }
+  if (!data?.length) return false;
+  const officialBooks = data.map(bookFromRecord);
+  state.books = mergeById(officialBooks, state.books, lastCloudState?.books);
+  officialBooks.forEach((book) => {
+    state.reviews[book.id] ||= [];
+  });
+  if (!bookById(selectedBookId)) selectedBookId = latestBook()?.id || "";
+  return true;
+}
+
+async function saveBookRecord(book) {
+  if (!clubDb || !book) return saveCloudState();
+  const { error } = await clubDb
+    .from("club_books")
+    .upsert(bookRecordFromBook(book), { onConflict: "id" });
+  if (error) {
+    console.warn("Nao foi possivel salvar livro oficial", error);
+    notify("Ainda falta rodar o SQL de livros e reuniao no Supabase.");
+    return false;
+  }
+  await loadBookRecords();
+  saveCloudState();
+  return true;
+}
+
+function bookRecordFromBook(book) {
+  return {
+    id: book.id,
+    title: book.title || "",
+    author: book.author || "",
+    month: book.month || "",
+    month_index: monthIndex(book.month),
+    year: Number(book.year || new Date().getFullYear()),
+    indicated_by: book.indicatedBy || "",
+    genre: book.genre || "",
+    pages: Number(book.pages || 0),
+    cover: book.cover || randomCover(0),
+    cover_image: book.coverImage || "",
+    synopsis: book.synopsis || "",
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function bookFromRecord(row) {
+  return {
+    id: row.id,
+    title: row.title || "",
+    author: row.author || "",
+    month: row.month || "",
+    year: Number(row.year || new Date().getFullYear()),
+    indicatedBy: row.indicated_by || "",
+    genre: row.genre || "",
+    pages: Number(row.pages || 0),
+    cover: row.cover || randomCover(0),
+    coverImage: row.cover_image || "",
+    synopsis: row.synopsis || "",
+  };
+}
+
+async function loadClubSettings() {
+  if (!clubDb) return false;
+  const { data, error } = await clubDb
+    .from("club_settings")
+    .select("*")
+    .eq("id", "main")
+    .maybeSingle();
+  if (error) {
+    console.warn("Nao foi possivel carregar regras oficiais", error);
+    return false;
+  }
+  if (!data) return false;
+  if (data.rules) state.rules = data.rules;
+  if (Array.isArray(data.indication_order)) state.indicationOrder = data.indication_order;
+  normalizeIndicationOrder();
+  return true;
+}
+
+async function saveClubSettingsRecord() {
+  if (!clubDb) return saveCloudState();
+  const { error } = await clubDb
+    .from("club_settings")
+    .upsert({
+      id: "main",
+      rules: state.rules || "",
+      indication_order: state.indicationOrder || [],
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "id" });
+  if (error) {
+    console.warn("Nao foi possivel salvar regras oficiais", error);
+    notify("Ainda falta rodar o SQL completo no Supabase.");
+    return false;
+  }
+  saveCloudState();
+  return true;
+}
+
+async function loadReviewRecords() {
+  if (!clubDb) return false;
+  const { data, error } = await clubDb
+    .from("club_reviews")
+    .select("*")
+    .order("updated_at", { ascending: false });
+  if (error) {
+    console.warn("Nao foi possivel carregar avaliacoes oficiais", error);
+    return false;
+  }
+  if (!data?.length) return false;
+  (data || []).forEach((row) => {
+    state.reviews[row.book_id] ||= [];
+    state.reviews[row.book_id] = state.reviews[row.book_id].filter((item) => item.participantId !== row.participant_id);
+    state.reviews[row.book_id].push({
+      participantId: row.participant_id,
+      rating: Number(row.rating || 0),
+      threeWords: row.three_words || "",
+      deepReview: row.deep_review || "",
+      comment: row.deep_review || "",
+    });
+  });
+  return true;
+}
+
+async function saveReviewRecord(bookId, review) {
+  if (!clubDb) return saveCloudState();
+  const { error } = await clubDb
+    .from("club_reviews")
+    .upsert({
+      book_id: bookId,
+      participant_id: review.participantId,
+      rating: Number(review.rating || 0),
+      three_words: review.threeWords || "",
+      deep_review: review.deepReview || review.comment || "",
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "book_id,participant_id" });
+  if (error) {
+    console.warn("Nao foi possivel salvar avaliacao oficial", error);
+    notify("Ainda falta rodar o SQL completo no Supabase.");
+    return false;
+  }
+  saveCloudState();
+  return true;
+}
+
+async function loadMemberLibraryRecords() {
+  if (!clubDb) return false;
+  const { data, error } = await clubDb
+    .from("club_member_library")
+    .select("*");
+  if (error) {
+    console.warn("Nao foi possivel carregar biblioteca das integrantes", error);
+    return false;
+  }
+  if (!data?.length) return false;
+  (data || []).forEach((row) => {
+    const participant = participantById(row.participant_id);
+    if (participant) {
+      participant.currentBookId = row.current_book_id || "";
+      participant.completedBookIds = Array.isArray(row.completed_book_ids) ? row.completed_book_ids : [];
+      participant.booksReadYear = Number(row.books_read_year ?? participant.booksReadYear ?? 0);
+      participant.booksReadClub = Number(row.books_read_club ?? participant.booksReadClub ?? 0);
+    }
+    state.progress[row.participant_id] = row.progress && typeof row.progress === "object" ? row.progress : {};
+    state.favorites[row.participant_id] = Array.isArray(row.favorites) ? row.favorites : [];
+  });
+  return true;
+}
+
+async function saveMemberLibraryRecord(participant = currentParticipant()) {
+  if (!clubDb || !participant) return saveCloudState();
+  const { error } = await clubDb
+    .from("club_member_library")
+    .upsert({
+      participant_id: participant.id,
+      current_book_id: participant.currentBookId || "",
+      completed_book_ids: participant.completedBookIds || [],
+      books_read_year: Number(participant.booksReadYear || 0),
+      books_read_club: Number(participant.booksReadClub || 0),
+      progress: state.progress[participant.id] || {},
+      favorites: state.favorites[participant.id] || [],
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "participant_id" });
+  if (error) {
+    console.warn("Nao foi possivel salvar biblioteca da integrante", error);
+    notify("Ainda falta rodar o SQL completo no Supabase.");
+    return false;
+  }
+  saveCloudState();
+  return true;
+}
+
+async function loadFeedRecords() {
+  if (!clubDb) return false;
+  const { data, error } = await clubDb
+    .from("club_feed")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) {
+    console.warn("Nao foi possivel carregar feed oficial", error);
+    return false;
+  }
+  if (!data?.length) return false;
+  const officialFeed = (data || []).map((row) => ({
+    id: row.id,
+    participantId: row.participant_id,
+    date: row.date || new Date(row.created_at).toLocaleDateString("pt-BR"),
+    type: row.type || "",
+    bookId: row.book_id || "",
+    text: row.text || "",
+    progress: Number(row.progress || 0),
+    likes: Array.isArray(row.liked_by) ? row.liked_by.length : 0,
+    likedBy: Array.isArray(row.liked_by) ? row.liked_by : [],
+    comments: Array.isArray(row.comments) ? row.comments : [],
+    editedAt: row.edited_at || "",
+  }));
+  state.feed = mergeById(officialFeed, state.feed, lastCloudState?.feed).sort(sortNewestFirst);
+  return true;
+}
+
+async function saveFeedRecord(item) {
+  if (!clubDb || !item) return saveCloudState();
+  const { error } = await clubDb
+    .from("club_feed")
+    .upsert({
+      id: item.id,
+      participant_id: item.participantId,
+      book_id: item.bookId,
+      date: item.date || new Date().toLocaleDateString("pt-BR"),
+      type: item.type || "",
+      text: item.text || "",
+      progress: Number(item.progress || 0),
+      liked_by: item.likedBy || [],
+      comments: item.comments || [],
+      edited_at: item.editedAt || "",
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "id" });
+  if (error) {
+    console.warn("Nao foi possivel salvar feed oficial", error);
+    notify("Ainda falta rodar o SQL completo no Supabase.");
+    return false;
+  }
+  saveCloudState();
+  return true;
+}
+
+async function loadNotificationRecords() {
+  if (!clubDb) return false;
+  const { data, error } = await clubDb
+    .from("club_notifications")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(40);
+  if (error) {
+    console.warn("Nao foi possivel carregar notificacoes oficiais", error);
+    return false;
+  }
+  if (!data?.length) return false;
+  const localReads = new Set((state.notifications || []).filter((item) => item.read).map((item) => item.id));
+  const officialNotifications = (data || []).map((row) => ({
+    id: row.id,
+    type: row.type || "",
+    title: row.title || "",
+    message: row.message || "",
+    date: row.date || new Date(row.created_at).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }),
+    read: localReads.has(row.id),
+  }));
+  state.notifications = mergeById(officialNotifications, state.notifications, lastCloudState?.notifications).sort(sortNewestFirst).slice(0, 40);
+  return true;
+}
+
+async function saveNotificationRecord(item) {
+  if (!clubDb || !item) return false;
+  const { error } = await clubDb
+    .from("club_notifications")
+    .upsert({
+      id: item.id,
+      type: item.type || "",
+      title: item.title || "",
+      message: item.message || "",
+      date: item.date || "",
+      created_at: new Date().toISOString(),
+    }, { onConflict: "id" });
+  if (error) console.warn("Nao foi possivel salvar notificacao oficial", error);
+  return !error;
 }
 
 async function saveMemberProfile(authUser, user = getUser()) {
@@ -1467,6 +1895,7 @@ function renderProfile() {
     </section>
     <section class="panel">
       <form id="profile-form" class="meeting-form">
+        <label><span>Nome da integrante</span><input name="name" required value="${escapeAttr(participant.name)}" /></label>
         <label><span>Livro favorito</span><input name="favoriteBook" value="${escapeAttr(participant.favoriteBook)}" /></label>
         <label><span>Personagem favorito</span><input name="favoriteCharacter" value="${escapeAttr(participant.favoriteCharacter)}" /></label>
         <label><span>Livros lidos neste ano</span><input name="booksReadYear" type="number" min="0" value="${participant.booksReadYear || 0}" /></label>
@@ -1482,7 +1911,7 @@ function renderProfile() {
   document.querySelector("#profile-form").addEventListener("submit", saveProfile);
 }
 
-function saveMeeting(event) {
+async function saveMeeting(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   state.meeting = {
@@ -1493,6 +1922,22 @@ function saveMeeting(event) {
     notes: data.get("notes"),
   };
   meetingEditing = false;
+  const pushPayload = {
+    type: "meeting",
+    title: "ReuniÃ£o atualizada",
+    message: meetingNotificationText(),
+  };
+  createNotification({ ...pushPayload, push: false });
+  const savedOnline = await saveMeetingRecord();
+  if (!savedOnline) {
+    notify("Nao consegui salvar a reuniao na nuvem. Tente novamente antes de avisar o clube.");
+    renderHome();
+    return;
+  }
+  notify("ReuniÃ£o salva no passaporte do clube.");
+  sendClubPush(pushPayload.title, pushPayload.message, pushPayload.type);
+  renderHome();
+  return;
   saveState();
   notify("Reunião salva no passaporte do clube.");
   createNotification({
@@ -1515,6 +1960,7 @@ async function saveBook(event) {
   const coverImage = coverFile ? await readPhoto(coverFile) : "";
   const editingId = data.get("bookId");
   const existing = editingId ? bookById(editingId) : null;
+  let bookPushPayload = null;
 
   if (existing) {
     existing.title = title;
@@ -1528,11 +1974,16 @@ async function saveBook(event) {
     if (coverImage) existing.coverImage = coverImage;
     selectedBookId = existing.id;
     notify("Livro atualizado.");
+    bookPushPayload = {
+      title: "Livro atualizado",
+      message: `${title} foi atualizado na biblioteca do clube.`,
+      type: "book",
+    };
     createNotification({
       type: "book",
       title: "Livro atualizado",
       message: `${title} foi atualizado na biblioteca do clube.`,
-      push: true,
+      push: false,
     });
   } else {
     const id = uniqueId(slug(`${title}-${month}-${year}`), state.books.map((book) => book.id));
@@ -1554,23 +2005,36 @@ async function saveBook(event) {
     selectedBookId = id;
     if (!state.meeting.bookId) state.meeting.bookId = id;
     notify("Livro salvo no clube.");
+    bookPushPayload = {
+      title: "Novo livro cadastrado",
+      message: `${title}, de ${author}, entrou no passaporte do clube.`,
+      type: "book",
+    };
     createNotification({
       type: "book",
       title: "Novo livro cadastrado",
       message: `${title}, de ${author}, entrou no passaporte do clube.`,
-      push: true,
+      push: false,
     });
   }
   bookFormMode = null;
-  saveState();
-  const savedOnline = await saveCloudState();
+  const savedBook = bookById(selectedBookId);
+  const savedOnline = await saveBookRecord(savedBook);
+  if (!savedOnline) {
+    notify("Nao consegui salvar o livro na nuvem. Tente novamente antes de avisar o clube.");
+    renderBooks();
+    return;
+  }
+  if (bookPushPayload) {
+    sendClubPush(bookPushPayload.title, bookPushPayload.message, bookPushPayload.type);
+  }
   if (!savedOnline) {
     notify("Livro salvo neste aparelho. A sincronização online ainda está tentando concluir.");
   }
   renderBooks();
 }
 
-function saveReview(event, bookId) {
+async function saveReview(event, bookId) {
   event.preventDefault();
   const participant = currentParticipant();
   const data = new FormData(event.currentTarget);
@@ -1591,7 +2055,12 @@ function saveReview(event, bookId) {
   } else {
     state.reviews[bookId].push({ participantId: participant.id, rating, threeWords, deepReview, comment: deepReview });
   }
-  saveState();
+  const review = state.reviews[bookId].find((item) => item.participantId === participant.id);
+  const savedOnline = await saveReviewRecord(bookId, review);
+  if (!savedOnline) {
+    renderBooks();
+    return;
+  }
   reviewFormOpen = false;
   notify("Avaliação salva com estrelas e comentário.");
   createNotification({
@@ -1603,7 +2072,7 @@ function saveReview(event, bookId) {
   renderBooks();
 }
 
-function toggleFavorite(bookId) {
+async function toggleFavorite(bookId) {
   const participant = currentParticipant();
   state.favorites[participant.id] ||= [];
   const list = state.favorites[participant.id];
@@ -1614,11 +2083,14 @@ function toggleFavorite(bookId) {
     list.push(bookId);
     notify("Livro adicionado aos favoritos.");
   }
-  saveState();
+  const savedOnline = await saveMemberLibraryRecord(participant);
+  if (!savedOnline) {
+    notify("Nao consegui salvar os favoritos na nuvem. Tente novamente.");
+  }
   renderBooks();
 }
 
-function saveFeed(event) {
+async function saveFeed(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   const participant = currentParticipant();
@@ -1633,14 +2105,16 @@ function saveFeed(event) {
   syncCompletedBook(participant, bookId, type, progress);
 
   const existing = feedId ? state.feed.find((item) => item.id === feedId && item.participantId === participant.id) : null;
+  let savedFeedItem;
   if (existing) {
     existing.type = type;
     existing.bookId = bookId;
     existing.text = text;
     existing.progress = progress;
     existing.editedAt = new Date().toLocaleDateString("pt-BR");
+    savedFeedItem = existing;
   } else {
-    state.feed.unshift({
+    savedFeedItem = {
       id: `f${Date.now()}`,
       participantId: participant.id,
       date: new Date().toLocaleDateString("pt-BR"),
@@ -1651,9 +2125,16 @@ function saveFeed(event) {
       likes: 0,
       likedBy: [],
       comments: [],
-    });
+    };
+    state.feed.unshift(savedFeedItem);
   }
-  saveState();
+  const savedLibrary = await saveMemberLibraryRecord(participant);
+  const savedFeed = await saveFeedRecord(savedFeedItem);
+  if (!savedLibrary || !savedFeed) {
+    notify("Nao consegui salvar o historico na nuvem. Tente novamente.");
+    renderFeed();
+    return;
+  }
   notify(existing ? "Histórico atualizado." : "Atualização publicada no feed.");
   createNotification({
     type: "feed",
@@ -1676,7 +2157,7 @@ function syncCompletedBook(participant, bookId, type, progress) {
   participant.booksReadYear = Number(participant.booksReadYear || 0) + 1;
 }
 
-function toggleFeedLike(feedId) {
+async function toggleFeedLike(feedId) {
   const participant = currentParticipant();
   const item = state.feed.find((feedItem) => feedItem.id === feedId);
   if (!item || !participant) return;
@@ -1689,11 +2170,14 @@ function toggleFeedLike(feedId) {
     notify("Histórico curtido.");
   }
   item.likes = item.likedBy.length;
-  saveState();
+  const savedOnline = await saveFeedRecord(item);
+  if (!savedOnline) {
+    notify("Nao consegui salvar a curtida na nuvem. Tente novamente.");
+  }
   renderFeed();
 }
 
-function saveFeedComment(event) {
+async function saveFeedComment(event) {
   event.preventDefault();
   const participant = currentParticipant();
   const data = new FormData(event.currentTarget);
@@ -1713,18 +2197,27 @@ function saveFeedComment(event) {
     date: new Date().toLocaleDateString("pt-BR"),
   });
   feedCommentId = null;
-  saveState();
+  const savedOnline = await saveFeedRecord(item);
+  if (!savedOnline) {
+    notify("Nao consegui salvar o comentario na nuvem. Tente novamente.");
+    renderFeed();
+    return;
+  }
   notify("Comentário publicado.");
   renderFeed();
 }
 
-function saveRules(event) {
+async function saveRules(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   state.rules = data.get("rules");
   normalizeIndicationOrder();
   rulesEditing = false;
-  saveState();
+  const savedOnline = await saveClubSettingsRecord();
+  if (!savedOnline) {
+    renderRules();
+    return;
+  }
   notify("Ordem e regras salvas.");
   renderRules();
 }
@@ -1733,6 +2226,9 @@ async function saveProfile(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   const participant = currentParticipant();
+  const user = getUser();
+  participant.name = data.get("name").trim() || participant.name;
+  if (user) user.name = participant.name;
   participant.favoriteBook = data.get("favoriteBook");
   participant.favoriteCharacter = data.get("favoriteCharacter");
   participant.booksReadYear = Number(data.get("booksReadYear") || 0);
@@ -1742,15 +2238,23 @@ async function saveProfile(event) {
   participant.quote = data.get("quote");
   const photo = event.currentTarget.elements.photo.files[0];
   if (photo) participant.photo = await readPhoto(photo);
+  let profileSaved = true;
+  let librarySaved = true;
   if (clubDb) {
     const { data: authData } = await clubDb.auth.getSession();
     if (authData.session?.user) {
       const user = ensureClubUser(authData.session.user);
-      await saveMemberProfile(authData.session.user, user);
+      profileSaved = await saveMemberProfile(authData.session.user, user);
+      librarySaved = await saveMemberLibraryRecord(participant);
       await loadMemberProfiles();
+      await loadMemberLibraryRecords();
     }
   }
-  saveState();
+  if (!profileSaved || !librarySaved) {
+    notify("Nao consegui salvar todo o perfil na nuvem. Tente novamente.");
+    renderProfile();
+    return;
+  }
   notify("Perfil salvo no passaporte.");
   renderProfile();
 }
@@ -1802,14 +2306,14 @@ function normalizeIndicationOrder() {
   state.indicationOrder = effectiveIndicationOrder().map((participant) => participant.id);
 }
 
-function moveOrder(participantId, direction) {
+async function moveOrder(participantId, direction) {
   normalizeIndicationOrder();
   const index = state.indicationOrder.indexOf(participantId);
   const nextIndex = index + direction;
   if (index < 0 || nextIndex < 0 || nextIndex >= state.indicationOrder.length) return;
   const [item] = state.indicationOrder.splice(index, 1);
   state.indicationOrder.splice(nextIndex, 0, item);
-  saveState();
+  await saveClubSettingsRecord();
   renderRules();
 }
 
@@ -2065,6 +2569,11 @@ function bookSortValue(book) {
   return Number(book.year || 0) * 12 + months.indexOf(book.month);
 }
 
+function monthIndex(month) {
+  const months = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+  return Math.max(0, months.indexOf(month));
+}
+
 function randomCover(index) {
   const covers = [
     "linear-gradient(145deg, #111923, #8f1f24 58%, #d9a23a)",
@@ -2269,7 +2778,8 @@ function createNotification({ type, title, message, push = false }) {
   state.notifications ||= [];
   state.notifications.unshift(item);
   state.notifications = state.notifications.slice(0, 40);
-  saveState();
+  saveNotificationRecord(item);
+  persistLocalState();
   updateNotificationBadge();
   if (!notificationPanel.classList.contains("hidden")) renderNotificationPanel();
   if (push) sendClubPush(title, message, type);
@@ -2425,7 +2935,7 @@ function markNotificationsRead() {
   (state.notifications || []).forEach((item) => {
     item.read = true;
   });
-  saveState();
+  persistLocalState();
   updateNotificationBadge();
   renderNotificationPanel();
 }
