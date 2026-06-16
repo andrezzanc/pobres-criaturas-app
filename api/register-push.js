@@ -37,6 +37,7 @@ module.exports = async function handler(req, res) {
         endpoint: subscription.endpoint,
         p256dh: keys.p256dh,
         auth: keys.auth,
+        subscription,
         user_agent: req.headers["user-agent"] || "",
         updated_at: new Date().toISOString(),
       }),
