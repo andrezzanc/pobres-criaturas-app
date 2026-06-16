@@ -57,6 +57,8 @@ let reviewFormOpen = false;
 let cloudSaveTimer = null;
 let cloudSaveInFlight = false;
 let cloudSavePending = false;
+let cloudUpdatedAt = null;
+let cloudRefreshInFlight = false;
 let notificationHistoryOpen = false;
 
 const bootScreen = document.querySelector("#boot-screen");
@@ -180,6 +182,15 @@ window.setInterval(() => {
   if (session && getUser()) checkMeetingReminders();
 }, 60000);
 
+window.setInterval(() => {
+  refreshCloudState({ render: true });
+}, 30000);
+
+window.addEventListener("focus", () => refreshCloudState({ render: true }));
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refreshCloudState({ render: true });
+});
+
 async function initApp() {
   if (clubDb) {
     const { data, error } = await clubDb.auth.getSession();
@@ -188,6 +199,7 @@ async function initApp() {
       const user = ensureClubUser(data.session.user);
       session = { email: user.email };
       localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      saveState();
     } else {
       session = null;
       localStorage.removeItem(SESSION_KEY);
@@ -285,13 +297,44 @@ async function loadCloudState() {
   }
 
   if (data) {
-    state = withStateDefaults({ ...clone(seed), ...(data.data || {}) });
-    selectedBookId = latestBook()?.id || "";
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    applyCloudState(data.data || {}, data.updated_at);
     return;
   }
 
   queueCloudSave();
+}
+
+function applyCloudState(cloudData, updatedAt = null) {
+  state = withStateDefaults({ ...clone(seed), ...(cloudData || {}) });
+  cloudUpdatedAt = updatedAt;
+  selectedBookId = latestBook()?.id || "";
+  persistLocalState();
+}
+
+async function refreshCloudState({ render = false } = {}) {
+  if (!clubDb || !session || cloudRefreshInFlight) return false;
+  cloudRefreshInFlight = true;
+  const { data, error } = await clubDb
+    .from("club_state")
+    .select("data, updated_at")
+    .eq("id", CLOUD_STATE_ID)
+    .maybeSingle();
+  cloudRefreshInFlight = false;
+  if (error || !data) return false;
+  const remoteTime = Date.parse(data.updated_at || "");
+  const knownTime = Date.parse(cloudUpdatedAt || "");
+  if (cloudUpdatedAt && remoteTime <= knownTime) return false;
+
+  applyCloudState(data.data || {}, data.updated_at);
+  const { data: authData } = await clubDb.auth.getSession();
+  if (authData.session?.user) {
+    ensureClubUser(authData.session.user);
+    persistLocalState();
+  }
+  if (render && appShell && !appShell.classList.contains("hidden")) {
+    showApp();
+  }
+  return true;
 }
 
 function queueCloudSave() {
@@ -312,15 +355,26 @@ async function saveCloudState() {
   }
   window.clearTimeout(cloudSaveTimer);
   cloudSaveInFlight = true;
+  const current = await fetchCloudState();
+  if (current) {
+    const remoteTime = Date.parse(current.updated_at || "");
+    const knownTime = Date.parse(cloudUpdatedAt || "");
+    if (!cloudUpdatedAt || remoteTime > knownTime) {
+      state = mergeClubStates(withStateDefaults({ ...clone(seed), ...(current.data || {}) }), state);
+      cloudUpdatedAt = current.updated_at;
+      persistLocalState();
+    }
+  }
   const payload = clone(state);
   delete payload.__cloudError;
   payload.users = (payload.users || []).map(({ password, ...user }) => user);
+  const savedAt = new Date().toISOString();
   const { error } = await clubDb
     .from("club_state")
     .upsert({
       id: CLOUD_STATE_ID,
       data: payload,
-      updated_at: new Date().toISOString(),
+      updated_at: savedAt,
     });
   cloudSaveInFlight = false;
   if (error) {
@@ -331,7 +385,21 @@ async function saveCloudState() {
     cloudSavePending = false;
     return saveCloudState();
   }
+  cloudUpdatedAt = savedAt;
   return true;
+}
+
+async function fetchCloudState() {
+  const { data, error } = await clubDb
+    .from("club_state")
+    .select("data, updated_at")
+    .eq("id", CLOUD_STATE_ID)
+    .maybeSingle();
+  if (error) {
+    console.warn("Nao foi possivel conferir a versao online", error);
+    return null;
+  }
+  return data;
 }
 
 function ensureClubUser(authUser, signupData = null) {
@@ -401,8 +469,104 @@ function loadState() {
 function saveState() {
   state.__version = APP_VERSION;
   state.__localUpdatedAt = new Date().toISOString();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  persistLocalState();
   queueCloudSave();
+}
+
+function persistLocalState() {
+  state.__version = APP_VERSION;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function mergeClubStates(cloudState, localState) {
+  const merged = withStateDefaults({ ...clone(seed), ...cloudState, ...localState });
+  merged.users = mergeUsers(cloudState.users, localState.users);
+  merged.participants = mergeById(cloudState.participants, localState.participants);
+  merged.books = mergeById(cloudState.books, localState.books);
+  merged.feed = mergeById(cloudState.feed, localState.feed).sort(sortNewestFirst);
+  merged.notifications = mergeById(cloudState.notifications, localState.notifications).sort(sortNewestFirst).slice(0, 40);
+  merged.reviews = mergeReviews(cloudState.reviews, localState.reviews);
+  merged.progress = mergeNestedObjects(cloudState.progress, localState.progress);
+  merged.favorites = mergeArrayMap(cloudState.favorites, localState.favorites);
+  merged.notificationSettings = {
+    ...(cloudState.notificationSettings || {}),
+    ...(localState.notificationSettings || {}),
+    reminders: {
+      ...(cloudState.notificationSettings?.reminders || {}),
+      ...(localState.notificationSettings?.reminders || {}),
+    },
+  };
+  merged.indicationOrder = mergeOrder(cloudState.indicationOrder, localState.indicationOrder, merged.participants);
+  merged.meeting = cloudState.meeting || localState.meeting || clone(seed.meeting);
+  merged.rules = cloudState.rules || localState.rules || seed.rules;
+  return withStateDefaults(merged);
+}
+
+function mergeById(cloudItems = [], localItems = []) {
+  const map = new Map();
+  [...(cloudItems || []), ...(localItems || [])].forEach((item) => {
+    if (!item) return;
+    const key = item.id || item.email || fallbackKey(item);
+    map.set(key, { ...(map.get(key) || {}), ...item });
+  });
+  return [...map.values()];
+}
+
+function mergeUsers(cloudUsers = [], localUsers = []) {
+  const map = new Map();
+  [...(cloudUsers || []), ...(localUsers || [])].forEach((user) => {
+    if (!user) return;
+    const key = user.supabaseUserId || user.email || user.participantId || fallbackKey(user);
+    map.set(key, { ...(map.get(key) || {}), ...user });
+  });
+  return [...map.values()];
+}
+
+function mergeReviews(cloudReviews = {}, localReviews = {}) {
+  const result = {};
+  [...new Set([...Object.keys(cloudReviews || {}), ...Object.keys(localReviews || {})])].forEach((bookId) => {
+    result[bookId] = mergeByParticipant(cloudReviews?.[bookId], localReviews?.[bookId]);
+  });
+  return result;
+}
+
+function mergeByParticipant(cloudItems = [], localItems = []) {
+  const map = new Map();
+  [...(cloudItems || []), ...(localItems || [])].forEach((item) => {
+    if (!item) return;
+    const key = item.participantId || fallbackKey(item);
+    map.set(key, { ...(map.get(key) || {}), ...item });
+  });
+  return [...map.values()];
+}
+
+function mergeNestedObjects(cloudValue = {}, localValue = {}) {
+  const result = { ...(cloudValue || {}) };
+  Object.entries(localValue || {}).forEach(([key, value]) => {
+    result[key] = { ...(result[key] || {}), ...(value || {}) };
+  });
+  return result;
+}
+
+function mergeArrayMap(cloudValue = {}, localValue = {}) {
+  const result = { ...(cloudValue || {}) };
+  Object.entries(localValue || {}).forEach(([key, value]) => {
+    result[key] = [...new Set([...(result[key] || []), ...(value || [])])];
+  });
+  return result;
+}
+
+function mergeOrder(cloudOrder = [], localOrder = [], participants = []) {
+  const ids = [...(cloudOrder || []), ...(localOrder || []), ...(participants || []).map((item) => item.id)];
+  return [...new Set(ids.filter(Boolean))];
+}
+
+function sortNewestFirst(a, b) {
+  return Date.parse(b.createdAt || b.date || 0) - Date.parse(a.createdAt || a.date || 0);
+}
+
+function fallbackKey(item) {
+  return JSON.stringify(item);
 }
 
 function withStateDefaults(value) {
