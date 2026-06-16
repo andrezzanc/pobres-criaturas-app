@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 18;
+const APP_VERSION = 19;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -469,6 +469,7 @@ async function saveRecordOnServer(table, payload) {
     if (!token) return saveRecordDirect(table, payload, "sessao ausente");
     const response = await fetch("./api/save-record", {
       method: "POST",
+      cache: "no-store",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
@@ -515,7 +516,8 @@ async function loadRecordsFromServer(table) {
   try {
     const token = await accessToken();
     if (!token) return loadRecordsDirect(table, "sessao ausente");
-    const response = await fetch(`./api/load-records?table=${encodeURIComponent(table)}`, {
+    const response = await fetch(`./api/load-records?table=${encodeURIComponent(table)}&t=${Date.now()}`, {
+      cache: "no-store",
       headers: {
         Authorization: `Bearer ${token}`,
       },

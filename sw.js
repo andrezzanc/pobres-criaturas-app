@@ -1,4 +1,4 @@
-const CACHE_NAME = "pobres-criaturas-pwa-v33";
+const CACHE_NAME = "pobres-criaturas-pwa-v34";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -32,6 +32,17 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
 
   const url = new URL(event.request.url);
+  const isAppOrigin = url.origin === self.location.origin;
+  const isDataRequest =
+    !isAppOrigin ||
+    url.pathname.startsWith("/api/") ||
+    url.pathname.includes("/api/");
+
+  if (isDataRequest) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
+
   const shouldUseNetworkFirst =
     event.request.mode === "navigate" ||
     url.pathname.endsWith("/") ||
