@@ -1,6 +1,16 @@
 -- Pobres Criaturas - estrutura completa de sincronizacao
 -- Rode este arquivo no SQL Editor do Supabase.
 
+create table if not exists public.club_state (
+  id text primary key,
+  data jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.club_state
+add column if not exists data jsonb not null default '{}'::jsonb,
+add column if not exists updated_at timestamptz not null default now();
+
 create table if not exists public.club_members (
   user_id uuid primary key references auth.users(id) on delete cascade,
   email text not null,
@@ -204,6 +214,7 @@ add column if not exists created_at timestamptz not null default now();
 
 create unique index if not exists club_notifications_id_key on public.club_notifications (id);
 
+alter table public.club_state enable row level security;
 alter table public.club_members enable row level security;
 alter table public.club_meeting enable row level security;
 alter table public.club_books enable row level security;
@@ -213,6 +224,7 @@ alter table public.club_member_library enable row level security;
 alter table public.club_feed enable row level security;
 alter table public.club_notifications enable row level security;
 
+grant select, insert, update on public.club_state to authenticated;
 grant select, insert, update on public.club_members to authenticated;
 grant select, insert, update on public.club_meeting to authenticated;
 grant select, insert, update on public.club_books to authenticated;
@@ -221,6 +233,13 @@ grant select, insert, update on public.club_reviews to authenticated;
 grant select, insert, update on public.club_member_library to authenticated;
 grant select, insert, update on public.club_feed to authenticated;
 grant select, insert, update on public.club_notifications to authenticated;
+
+drop policy if exists "Integrantes podem ver estado do clube" on public.club_state;
+create policy "Integrantes podem ver estado do clube" on public.club_state for select to authenticated using (true);
+drop policy if exists "Integrantes podem criar estado do clube" on public.club_state;
+create policy "Integrantes podem criar estado do clube" on public.club_state for insert to authenticated with check (true);
+drop policy if exists "Integrantes podem atualizar estado do clube" on public.club_state;
+create policy "Integrantes podem atualizar estado do clube" on public.club_state for update to authenticated using (true) with check (true);
 
 drop policy if exists "Integrantes veem integrantes" on public.club_members;
 create policy "Integrantes veem integrantes" on public.club_members for select to authenticated using (true);
@@ -266,3 +285,7 @@ create policy "Integrantes salvam notificacoes" on public.club_notifications for
 
 insert into public.club_meeting (id) values ('current') on conflict (id) do nothing;
 insert into public.club_settings (id) values ('main') on conflict (id) do nothing;
+insert into public.club_state (id, data) values ('default-club-state', '{}'::jsonb) on conflict (id) do nothing;
+
+-- Forca a API do Supabase a reconhecer tabelas/colunas novas imediatamente.
+notify pgrst, 'reload schema';
