@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 8;
+const APP_VERSION = 9;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -282,8 +282,7 @@ async function handleCloudAuth(event) {
     const user = ensureClubUser(data.user, { name, profile });
     session = { email: user.email };
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    await saveMemberProfile(data.user, user);
-    await loadMemberProfiles();
+    await saveMemberProfile(data.user, user, participantById(user.participantId));
     persistLocalState();
     startSession(user);
     submitButton.disabled = false;
@@ -878,15 +877,16 @@ async function saveNotificationRecord(item) {
   return !error;
 }
 
-async function saveMemberProfile(authUser, user = getUser()) {
-  if (!clubDb || !authUser || !user) return false;
-  const participant = participantById(user.participantId);
+async function saveMemberProfile(authUser, user = getUser(), participantOverride = null) {
+  if (!clubDb || !authUser) return false;
+  const participant = participantOverride || participantById(user?.participantId);
   if (!participant) return false;
+  const email = (user?.email || authUser.email || "").toLowerCase();
   const payload = {
     user_id: authUser.id,
-    email: user.email,
+    email,
     participant_id: participant.id,
-    name: participant.name || user.name || user.email,
+    name: participant.name || user?.name || email,
     role: participant.role || "",
     tone: participant.tone || "gold",
     favorite_book: participant.favoriteBook || "",
@@ -993,7 +993,8 @@ async function loadMemberProfiles() {
 function mergeMemberProfiles(rows = []) {
   rows.forEach((row) => {
     const participant = participantFromMemberRow(row);
-    const existingParticipant = participantById(participant.id) || state.participants.find((item) => item.name === participant.name);
+    const linkedUser = state.users.find((item) => item.supabaseUserId === row.user_id || item.email === row.email);
+    const existingParticipant = participantById(participant.id) || participantById(linkedUser?.participantId);
     if (existingParticipant) {
       Object.assign(existingParticipant, { ...existingParticipant, ...participant });
     } else {
@@ -2320,8 +2321,12 @@ async function saveProfile(event) {
   if (clubDb) {
     const { data: authData } = await clubDb.auth.getSession();
     if (authData.session?.user) {
-      const user = ensureClubUser(authData.session.user);
-      profileSaved = await saveMemberProfile(authData.session.user, user);
+      if (user) {
+        user.supabaseUserId = authData.session.user.id;
+        user.participantId = participant.id;
+        user.email = (user.email || authData.session.user.email || "").toLowerCase();
+      }
+      profileSaved = await saveMemberProfile(authData.session.user, user, participant);
       librarySaved = await saveMemberLibraryRecord(participant);
       confirmedOnline = profileSaved && librarySaved
         ? await verifyMemberProfileSaved(authData.session.user, participant)
