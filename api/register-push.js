@@ -1,4 +1,4 @@
-const { json, readBody, requireEnv, serviceHeaders, getUserFromRequest } = require("./_push-utils");
+const { json, readBody, requireEnv, serviceHeaders, supabaseError, getUserFromRequest } = require("./_push-utils");
 
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") return json(res, 405, { error: "Metodo nao permitido" });
@@ -15,10 +15,22 @@ module.exports = async function handler(req, res) {
       return json(res, 400, { error: "Inscricao de push incompleta." });
     }
 
-    const response = await fetch(`${process.env.SUPABASE_URL}/rest/v1/push_subscriptions?on_conflict=endpoint`, {
+    const endpointParam = encodeURIComponent(`eq.${subscription.endpoint}`);
+    const deleteResponse = await fetch(`${process.env.SUPABASE_URL}/rest/v1/push_subscriptions?endpoint=${endpointParam}`, {
+      method: "DELETE",
+      headers: serviceHeaders({
+        Prefer: "return=minimal",
+      }),
+    });
+
+    if (!deleteResponse.ok) {
+      return json(res, 500, { error: await supabaseError(deleteResponse, "Nao consegui remover inscricao antiga de push") });
+    }
+
+    const insertResponse = await fetch(`${process.env.SUPABASE_URL}/rest/v1/push_subscriptions`, {
       method: "POST",
       headers: serviceHeaders({
-        Prefer: "resolution=merge-duplicates,return=minimal",
+        Prefer: "return=minimal",
       }),
       body: JSON.stringify({
         user_id: user.id,
@@ -30,7 +42,9 @@ module.exports = async function handler(req, res) {
       }),
     });
 
-    if (!response.ok) return json(res, 500, { error: await response.text() });
+    if (!insertResponse.ok) {
+      return json(res, 500, { error: await supabaseError(insertResponse, "Nao consegui salvar este aparelho no servidor de push") });
+    }
     return json(res, 200, { ok: true });
   } catch (error) {
     return json(res, error.statusCode || 500, { error: error.message || "Erro ao registrar push." });

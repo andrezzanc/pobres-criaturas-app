@@ -35,6 +35,22 @@ function serviceHeaders(extra = {}) {
   };
 }
 
+async function supabaseJson(response) {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+async function supabaseError(response, action) {
+  const body = await supabaseJson(response);
+  const detail = typeof body === "string" ? body : body?.message || body?.hint || body?.details || JSON.stringify(body);
+  return `${action}: ${detail || response.statusText}`;
+}
+
 async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -112,6 +128,8 @@ module.exports = {
   readBody,
   requireEnv,
   serviceHeaders,
+  supabaseJson,
+  supabaseError,
   getUserFromRequest,
   sendPushToAll,
 };
