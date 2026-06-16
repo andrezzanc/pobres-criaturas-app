@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 2;
+const APP_VERSION = 3;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -58,6 +58,7 @@ let cloudSaveTimer = null;
 let cloudSaveInFlight = false;
 let cloudSavePending = false;
 let cloudUpdatedAt = null;
+let lastCloudState = null;
 let cloudRefreshInFlight = false;
 let notificationHistoryOpen = false;
 
@@ -195,11 +196,19 @@ async function initApp() {
   if (clubDb) {
     const { data, error } = await clubDb.auth.getSession();
     if (!error && data.session?.user) {
-      await loadCloudState();
+      const loaded = await loadCloudState();
+      if (!loaded) {
+        showAuth();
+        notify("Nao consegui sincronizar a nuvem. Entre novamente em alguns segundos.");
+        return;
+      }
+      const beforeUserSync = stableJson({ users: state.users, participants: state.participants });
       const user = ensureClubUser(data.session.user);
       session = { email: user.email };
       localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-      saveState();
+      if (stableJson({ users: state.users, participants: state.participants }) !== beforeUserSync) {
+        saveState();
+      }
     } else {
       session = null;
       localStorage.removeItem(SESSION_KEY);
@@ -262,7 +271,12 @@ async function handleCloudAuth(event) {
       return;
     }
 
-    await loadCloudState();
+    const loaded = await loadCloudState();
+    if (!loaded) {
+      message.textContent = "Conta criada, mas nao consegui abrir os dados online agora. Tente entrar novamente.";
+      submitButton.disabled = false;
+      return;
+    }
     const user = ensureClubUser(data.user, { name, profile });
     saveState();
     startSession(user);
@@ -277,9 +291,17 @@ async function handleCloudAuth(event) {
     return;
   }
 
-  await loadCloudState();
+  const loaded = await loadCloudState();
+  if (!loaded) {
+    message.textContent = "Nao consegui carregar os dados online. Tente entrar novamente em alguns segundos.";
+    submitButton.disabled = false;
+    return;
+  }
+  const beforeUserSync = stableJson({ users: state.users, participants: state.participants });
   const user = ensureClubUser(data.user);
-  saveState();
+  if (stableJson({ users: state.users, participants: state.participants }) !== beforeUserSync) {
+    saveState();
+  }
   startSession(user);
   submitButton.disabled = false;
 }
@@ -293,20 +315,22 @@ async function loadCloudState() {
 
   if (error) {
     notify("Nao consegui carregar os dados online. Confira se o SQL da Etapa 7 foi executado.");
-    return;
+    return false;
   }
 
   if (data) {
     applyCloudState(data.data || {}, data.updated_at);
-    return;
+    return true;
   }
 
   queueCloudSave();
+  return true;
 }
 
 function applyCloudState(cloudData, updatedAt = null) {
   state = withStateDefaults({ ...clone(seed), ...(cloudData || {}) });
   cloudUpdatedAt = updatedAt;
+  lastCloudState = clone(state);
   selectedBookId = latestBook()?.id || "";
   persistLocalState();
 }
@@ -360,7 +384,7 @@ async function saveCloudState() {
     const remoteTime = Date.parse(current.updated_at || "");
     const knownTime = Date.parse(cloudUpdatedAt || "");
     if (!cloudUpdatedAt || remoteTime > knownTime) {
-      state = mergeClubStates(withStateDefaults({ ...clone(seed), ...(current.data || {}) }), state);
+      state = mergeClubStates(withStateDefaults({ ...clone(seed), ...(current.data || {}) }), state, lastCloudState);
       cloudUpdatedAt = current.updated_at;
       persistLocalState();
     }
@@ -386,6 +410,7 @@ async function saveCloudState() {
     return saveCloudState();
   }
   cloudUpdatedAt = savedAt;
+  lastCloudState = clone(state);
   return true;
 }
 
@@ -478,80 +503,120 @@ function persistLocalState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-function mergeClubStates(cloudState, localState) {
+function mergeClubStates(cloudState, localState, baseState = null) {
   const merged = withStateDefaults({ ...clone(seed), ...cloudState, ...localState });
-  merged.users = mergeUsers(cloudState.users, localState.users);
-  merged.participants = mergeById(cloudState.participants, localState.participants);
-  merged.books = mergeById(cloudState.books, localState.books);
-  merged.feed = mergeById(cloudState.feed, localState.feed).sort(sortNewestFirst);
-  merged.notifications = mergeById(cloudState.notifications, localState.notifications).sort(sortNewestFirst).slice(0, 40);
-  merged.reviews = mergeReviews(cloudState.reviews, localState.reviews);
-  merged.progress = mergeNestedObjects(cloudState.progress, localState.progress);
-  merged.favorites = mergeArrayMap(cloudState.favorites, localState.favorites);
-  merged.notificationSettings = {
-    ...(cloudState.notificationSettings || {}),
-    ...(localState.notificationSettings || {}),
+  merged.users = mergeUsers(cloudState.users, localState.users, baseState?.users);
+  merged.participants = mergeById(cloudState.participants, localState.participants, baseState?.participants);
+  merged.books = mergeById(cloudState.books, localState.books, baseState?.books);
+  merged.feed = mergeById(cloudState.feed, localState.feed, baseState?.feed).sort(sortNewestFirst);
+  merged.notifications = mergeById(cloudState.notifications, localState.notifications, baseState?.notifications).sort(sortNewestFirst).slice(0, 40);
+  merged.reviews = mergeReviews(cloudState.reviews, localState.reviews, baseState?.reviews);
+  merged.progress = mergeNestedObjects(cloudState.progress, localState.progress, baseState?.progress);
+  merged.favorites = mergeArrayMap(cloudState.favorites, localState.favorites, baseState?.favorites);
+  merged.notificationSettings = localChanged(localState.notificationSettings, baseState?.notificationSettings)
+    ? {
+      ...(cloudState.notificationSettings || {}),
+      ...(localState.notificationSettings || {}),
     reminders: {
       ...(cloudState.notificationSettings?.reminders || {}),
       ...(localState.notificationSettings?.reminders || {}),
     },
-  };
+    }
+    : cloudState.notificationSettings || localState.notificationSettings || {};
   merged.indicationOrder = mergeOrder(cloudState.indicationOrder, localState.indicationOrder, merged.participants);
-  merged.meeting = cloudState.meeting || localState.meeting || clone(seed.meeting);
-  merged.rules = cloudState.rules || localState.rules || seed.rules;
+  merged.meeting = localChanged(localState.meeting, baseState?.meeting) ? localState.meeting : cloudState.meeting || localState.meeting || clone(seed.meeting);
+  merged.rules = localChanged(localState.rules, baseState?.rules) ? localState.rules : cloudState.rules || localState.rules || seed.rules;
   return withStateDefaults(merged);
 }
 
-function mergeById(cloudItems = [], localItems = []) {
+function mergeById(cloudItems = [], localItems = [], baseItems = []) {
   const map = new Map();
-  [...(cloudItems || []), ...(localItems || [])].forEach((item) => {
+  const baseMap = itemMap(baseItems);
+  (cloudItems || []).forEach((item) => {
     if (!item) return;
     const key = item.id || item.email || fallbackKey(item);
-    map.set(key, { ...(map.get(key) || {}), ...item });
+    map.set(key, item);
+  });
+  (localItems || []).forEach((item) => {
+    if (!item) return;
+    const key = item.id || item.email || fallbackKey(item);
+    const cloudItem = map.get(key);
+    const baseItem = baseMap.get(key);
+    if (!cloudItem || localChanged(item, baseItem)) {
+      map.set(key, { ...(cloudItem || {}), ...item });
+    }
   });
   return [...map.values()];
 }
 
-function mergeUsers(cloudUsers = [], localUsers = []) {
+function mergeUsers(cloudUsers = [], localUsers = [], baseUsers = []) {
   const map = new Map();
-  [...(cloudUsers || []), ...(localUsers || [])].forEach((user) => {
+  const baseMap = userMap(baseUsers);
+  (cloudUsers || []).forEach((user) => {
     if (!user) return;
     const key = user.supabaseUserId || user.email || user.participantId || fallbackKey(user);
-    map.set(key, { ...(map.get(key) || {}), ...user });
+    map.set(key, user);
+  });
+  (localUsers || []).forEach((user) => {
+    if (!user) return;
+    const key = user.supabaseUserId || user.email || user.participantId || fallbackKey(user);
+    const cloudUser = map.get(key);
+    const baseUser = baseMap.get(key);
+    if (!cloudUser || localChanged(user, baseUser)) {
+      map.set(key, { ...(cloudUser || {}), ...user });
+    }
   });
   return [...map.values()];
 }
 
-function mergeReviews(cloudReviews = {}, localReviews = {}) {
+function mergeReviews(cloudReviews = {}, localReviews = {}, baseReviews = {}) {
   const result = {};
   [...new Set([...Object.keys(cloudReviews || {}), ...Object.keys(localReviews || {})])].forEach((bookId) => {
-    result[bookId] = mergeByParticipant(cloudReviews?.[bookId], localReviews?.[bookId]);
+    result[bookId] = mergeByParticipant(cloudReviews?.[bookId], localReviews?.[bookId], baseReviews?.[bookId]);
   });
   return result;
 }
 
-function mergeByParticipant(cloudItems = [], localItems = []) {
+function mergeByParticipant(cloudItems = [], localItems = [], baseItems = []) {
   const map = new Map();
-  [...(cloudItems || []), ...(localItems || [])].forEach((item) => {
+  const baseMap = participantMap(baseItems);
+  (cloudItems || []).forEach((item) => {
     if (!item) return;
     const key = item.participantId || fallbackKey(item);
-    map.set(key, { ...(map.get(key) || {}), ...item });
+    map.set(key, item);
+  });
+  (localItems || []).forEach((item) => {
+    if (!item) return;
+    const key = item.participantId || fallbackKey(item);
+    const cloudItem = map.get(key);
+    const baseItem = baseMap.get(key);
+    if (!cloudItem || localChanged(item, baseItem)) {
+      map.set(key, { ...(cloudItem || {}), ...item });
+    }
   });
   return [...map.values()];
 }
 
-function mergeNestedObjects(cloudValue = {}, localValue = {}) {
+function mergeNestedObjects(cloudValue = {}, localValue = {}, baseValue = {}) {
   const result = { ...(cloudValue || {}) };
   Object.entries(localValue || {}).forEach(([key, value]) => {
-    result[key] = { ...(result[key] || {}), ...(value || {}) };
+    result[key] ||= {};
+    Object.entries(value || {}).forEach(([childKey, childValue]) => {
+      const baseChild = baseValue?.[key]?.[childKey];
+      if (!(childKey in result[key]) || localChanged(childValue, baseChild)) {
+        result[key][childKey] = childValue;
+      }
+    });
   });
   return result;
 }
 
-function mergeArrayMap(cloudValue = {}, localValue = {}) {
+function mergeArrayMap(cloudValue = {}, localValue = {}, baseValue = {}) {
   const result = { ...(cloudValue || {}) };
   Object.entries(localValue || {}).forEach(([key, value]) => {
-    result[key] = [...new Set([...(result[key] || []), ...(value || [])])];
+    result[key] = localChanged(value, baseValue?.[key])
+      ? [...new Set([...(result[key] || []), ...(value || [])])]
+      : result[key] || value || [];
   });
   return result;
 }
@@ -563,6 +628,39 @@ function mergeOrder(cloudOrder = [], localOrder = [], participants = []) {
 
 function sortNewestFirst(a, b) {
   return Date.parse(b.createdAt || b.date || 0) - Date.parse(a.createdAt || a.date || 0);
+}
+
+function itemMap(items = []) {
+  const map = new Map();
+  (items || []).forEach((item) => {
+    if (item) map.set(item.id || item.email || fallbackKey(item), item);
+  });
+  return map;
+}
+
+function userMap(items = []) {
+  const map = new Map();
+  (items || []).forEach((item) => {
+    if (item) map.set(item.supabaseUserId || item.email || item.participantId || fallbackKey(item), item);
+  });
+  return map;
+}
+
+function participantMap(items = []) {
+  const map = new Map();
+  (items || []).forEach((item) => {
+    if (item) map.set(item.participantId || fallbackKey(item), item);
+  });
+  return map;
+}
+
+function localChanged(localValue, baseValue) {
+  if (baseValue === undefined) return true;
+  return stableJson(localValue) !== stableJson(baseValue);
+}
+
+function stableJson(value) {
+  return JSON.stringify(value ?? null);
 }
 
 function fallbackKey(item) {
