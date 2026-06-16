@@ -188,6 +188,9 @@ async function initApp() {
       const user = ensureClubUser(data.session.user);
       session = { email: user.email };
       localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    } else {
+      session = null;
+      localStorage.removeItem(SESSION_KEY);
     }
   }
 
@@ -425,6 +428,10 @@ function startSession(user) {
 
 function showApp() {
   const user = getUser();
+  if (!user) {
+    showAuth();
+    return;
+  }
   bootScreen.classList.add("hidden");
   authScreen.classList.add("hidden");
   appShell.classList.remove("hidden");
