@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 9;
+const APP_VERSION = 10;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -62,6 +62,7 @@ let lastCloudState = null;
 let cloudRefreshInFlight = false;
 let notificationHistoryOpen = false;
 let suppressCloudAlerts = false;
+let lastProfileSaveIssue = "";
 
 const bootScreen = document.querySelector("#boot-screen");
 const authScreen = document.querySelector("#auth-screen");
@@ -933,13 +934,24 @@ async function ensureMemberProfileRecord(authUser, user = getUser()) {
 }
 
 async function verifyMemberProfileSaved(authUser, participant) {
-  const { data: profile, error: profileError } = await clubDb
+  lastProfileSaveIssue = "";
+  let { data: profile, error: profileError } = await clubDb
     .from("club_members")
     .select("*")
     .eq("user_id", authUser.id)
     .maybeSingle();
+  if (!profile && !profileError) {
+    const fallback = await clubDb
+      .from("club_members")
+      .select("*")
+      .eq("participant_id", participant.id)
+      .maybeSingle();
+    profile = fallback.data;
+    profileError = fallback.error;
+  }
   if (profileError || !profile) {
-    reportCloudSaveError("confirmacao do perfil", profileError || { message: "perfil nao encontrado apos salvar" });
+    lastProfileSaveIssue = profileError?.message || "perfil nao encontrado apos salvar";
+    reportCloudSaveError("confirmacao do perfil", profileError || { message: lastProfileSaveIssue });
     return false;
   }
 
@@ -949,31 +961,37 @@ async function verifyMemberProfileSaved(authUser, participant) {
     .eq("participant_id", participant.id)
     .maybeSingle();
   if (libraryError || !library) {
-    reportCloudSaveError("confirmacao da biblioteca da integrante", libraryError || { message: "biblioteca nao encontrada apos salvar" });
+    lastProfileSaveIssue = libraryError?.message || "biblioteca nao encontrada apos salvar";
+    reportCloudSaveError("confirmacao da biblioteca da integrante", libraryError || { message: lastProfileSaveIssue });
     return false;
   }
 
-  const profileOk =
-    profile.name === participant.name &&
-    (profile.favorite_book || "") === (participant.favoriteBook || "") &&
-    (profile.favorite_character || "") === (participant.favoriteCharacter || "") &&
-    (profile.quote || "") === (participant.quote || "") &&
-    Number(profile.goal || 0) === Number(participant.goal || 0) &&
-    stableJson(profile.genres || []) === stableJson(participant.genres || []);
+  const differences = [];
+  if ((profile.name || "") !== (participant.name || "")) differences.push("nome");
+  if ((profile.favorite_book || "") !== (participant.favoriteBook || "")) differences.push("livro favorito");
+  if ((profile.favorite_character || "") !== (participant.favoriteCharacter || "")) differences.push("personagem favorito");
+  if ((profile.quote || "") !== (participant.quote || "")) differences.push("citacao");
+  if (Number(profile.goal || 0) !== Number(participant.goal || 0)) differences.push("meta");
+  if (stableJson(normalizeList(profile.genres)) !== stableJson(normalizeList(participant.genres))) differences.push("generos");
+  if (Number(library.books_read_year || 0) !== Number(participant.booksReadYear || 0)) differences.push("lidos no ano");
+  if (Number(library.books_read_club || 0) !== Number(participant.booksReadClub || 0)) differences.push("lidos no clube");
 
-  const libraryOk =
-    Number(library.books_read_year || 0) === Number(participant.booksReadYear || 0) &&
-    Number(library.books_read_club || 0) === Number(participant.booksReadClub || 0);
-
-  if (!profileOk || !libraryOk) {
-    notify("O Supabase respondeu, mas devolveu dados diferentes. Tente salvar de novo.");
-    console.warn("Divergencia ao confirmar perfil", { profile, library, participant });
+  if (differences.length) {
+    lastProfileSaveIssue = `campos nao confirmados: ${differences.join(", ")}`;
+    notify(`O Supabase salvou diferente: ${differences.join(", ")}.`);
+    console.warn("Divergencia ao confirmar perfil", { differences, profile, library, participant });
     return false;
   }
 
   mergeMemberProfiles([profile]);
   mergeMemberLibraryRows([library]);
   return true;
+}
+
+function normalizeList(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (!value) return [];
+  return String(value).split(",").map((item) => item.trim()).filter(Boolean);
 }
 
 async function loadMemberProfiles() {
@@ -2334,7 +2352,7 @@ async function saveProfile(event) {
     }
   }
   if (!profileSaved || !librarySaved || !confirmedOnline) {
-    notify("Nao consegui confirmar o perfil na nuvem. Tente novamente.");
+    notify(lastProfileSaveIssue ? `Nao confirmou: ${lastProfileSaveIssue}.` : "Nao consegui confirmar o perfil na nuvem. Tente novamente.");
     renderProfile();
     return;
   }
