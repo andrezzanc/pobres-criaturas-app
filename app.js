@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 14;
+const APP_VERSION = 15;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -319,7 +319,10 @@ async function handleCloudAuth(event) {
 
 async function loadCloudState() {
   const structuredLoaded = await loadStructuredClubData();
-  if (structuredLoaded) return true;
+  if (structuredLoaded) {
+    await loadCloudBackupState();
+    return true;
+  }
 
   const current = await fetchCloudState();
   if (!current && state.__cloudError) {
@@ -350,8 +353,9 @@ async function refreshCloudState({ render = false } = {}) {
   cloudRefreshInFlight = true;
   const before = stableJson(state);
   const structuredLoaded = await loadStructuredClubData();
+  const backupLoaded = await loadCloudBackupState();
 
-  if (!structuredLoaded) {
+  if (!structuredLoaded && !backupLoaded) {
     const current = await fetchCloudState();
     if (current) {
       const remoteTime = Date.parse(current.updated_at || "");
@@ -371,7 +375,19 @@ async function refreshCloudState({ render = false } = {}) {
   if (changed && render && appShell && !appShell.classList.contains("hidden")) {
     showApp();
   }
-  return changed || structuredLoaded;
+  return changed || structuredLoaded || backupLoaded;
+}
+
+async function loadCloudBackupState() {
+  const current = await fetchCloudState();
+  if (!current?.data) return false;
+  const backupState = withStateDefaults({ ...clone(seed), ...(current.data || {}) });
+  state = mergeClubStates(state, backupState, lastCloudState);
+  cloudUpdatedAt = current.updated_at;
+  lastCloudState = clone(state);
+  selectedBookId = latestBook()?.id || selectedBookId || "";
+  persistLocalState();
+  return true;
 }
 
 function queueCloudSave() {
@@ -908,6 +924,7 @@ async function saveMemberProfile(authUser, user = getUser(), participantOverride
     photo: participant.photo || "",
     updated_at: new Date().toISOString(),
   };
+  participant.profileUpdatedAt = payload.updated_at;
   const saved = await saveRecordOnServer("club_members", payload);
   if (!saved.ok) {
     reportCloudSaveError("perfil da integrante", { message: saved.error });
@@ -1019,7 +1036,8 @@ async function loadMemberProfiles() {
   const { data, error } = await clubDb
     .from("club_members")
     .select("*")
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: true })
+    .order("updated_at", { ascending: true });
   if (error) {
     console.warn("Nao foi possivel carregar integrantes do Supabase", error);
     return false;
@@ -1034,7 +1052,11 @@ function mergeMemberProfiles(rows = []) {
     const linkedUser = state.users.find((item) => item.supabaseUserId === row.user_id || item.email === row.email);
     const existingParticipant = participantById(participant.id) || participantById(linkedUser?.participantId);
     if (existingParticipant) {
-      Object.assign(existingParticipant, { ...existingParticipant, ...participant });
+      const existingTime = Date.parse(existingParticipant.profileUpdatedAt || existingParticipant.updatedAt || 0);
+      const incomingTime = Date.parse(participant.profileUpdatedAt || participant.updatedAt || 0);
+      if (!existingTime || !incomingTime || incomingTime >= existingTime) {
+        Object.assign(existingParticipant, { ...existingParticipant, ...participant });
+      }
     } else {
       state.participants.push(participant);
     }
@@ -1082,6 +1104,7 @@ function participantFromMemberRow(row) {
     personality: profile.personality,
     discussion: profile.discussion,
     photo: row.photo || "",
+    profileUpdatedAt: row.updated_at || row.created_at || "",
   };
 }
 
@@ -1200,11 +1223,21 @@ function mergeById(cloudItems = [], localItems = [], baseItems = []) {
     const key = item.id || item.email || fallbackKey(item);
     const cloudItem = map.get(key);
     const baseItem = baseMap.get(key);
+    const cloudTime = itemTime(cloudItem);
+    const localTime = itemTime(item);
+    if (cloudItem && cloudTime && localTime && cloudTime !== localTime) {
+      map.set(key, localTime > cloudTime ? { ...cloudItem, ...item } : { ...item, ...cloudItem });
+      return;
+    }
     if (!cloudItem || localChanged(item, baseItem)) {
       map.set(key, { ...(cloudItem || {}), ...item });
     }
   });
   return [...map.values()];
+}
+
+function itemTime(item) {
+  return Date.parse(item?.profileUpdatedAt || item?.updatedAt || item?.updated_at || item?.createdAt || item?.created_at || 0) || 0;
 }
 
 function mergeUsers(cloudUsers = [], localUsers = [], baseUsers = []) {
@@ -2360,6 +2393,7 @@ async function saveProfile(event) {
   participant.goal = Number(data.get("goal") || 12);
   participant.genres = data.get("genres").split(",").map((item) => item.trim()).filter(Boolean);
   participant.quote = data.get("quote");
+  participant.profileUpdatedAt = new Date().toISOString();
   const photo = event.currentTarget.elements.photo.files[0];
   if (photo) participant.photo = await readPhoto(photo);
   let profileSaved = true;
