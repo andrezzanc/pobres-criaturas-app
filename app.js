@@ -61,6 +61,7 @@ let cloudUpdatedAt = null;
 let lastCloudState = null;
 let cloudRefreshInFlight = false;
 let notificationHistoryOpen = false;
+let suppressCloudAlerts = false;
 
 const bootScreen = document.querySelector("#boot-screen");
 const authScreen = document.querySelector("#auth-screen");
@@ -482,6 +483,7 @@ async function loadStructuredClubData() {
 
 async function migrateLegacyStateToTables() {
   if (!clubDb) return;
+  suppressCloudAlerts = true;
   try {
     if (state.meeting && (state.meeting.date || state.meeting.time || state.meeting.place || state.meeting.notes || state.meeting.bookId)) {
       const { data } = await clubDb.from("club_meeting").select("date,time,book_id,place,notes").eq("id", "current").maybeSingle();
@@ -521,6 +523,16 @@ async function migrateLegacyStateToTables() {
     }
   } catch (error) {
     console.warn("Migracao automatica para tabelas oficiais nao concluiu", error);
+  } finally {
+    suppressCloudAlerts = false;
+  }
+}
+
+function reportCloudSaveError(area, error) {
+  const detail = error?.message || error?.details || error?.hint || "erro sem detalhe";
+  console.warn(`Nao foi possivel salvar ${area}`, error);
+  if (!suppressCloudAlerts) {
+    notify(`Erro ao salvar ${area}: ${detail}`);
   }
 }
 
@@ -562,8 +574,7 @@ async function saveMeetingRecord() {
       updated_at: new Date().toISOString(),
     }, { onConflict: "id" });
   if (error) {
-    console.warn("Nao foi possivel salvar reuniao oficial", error);
-    notify("Ainda falta rodar o SQL de livros e reuniao no Supabase.");
+    reportCloudSaveError("reuniao", error);
     return false;
   }
   saveCloudState();
@@ -598,8 +609,7 @@ async function saveBookRecord(book) {
     .from("club_books")
     .upsert(bookRecordFromBook(book), { onConflict: "id" });
   if (error) {
-    console.warn("Nao foi possivel salvar livro oficial", error);
-    notify("Ainda falta rodar o SQL de livros e reuniao no Supabase.");
+    reportCloudSaveError("livro", error);
     return false;
   }
   await loadBookRecords();
@@ -670,8 +680,7 @@ async function saveClubSettingsRecord() {
       updated_at: new Date().toISOString(),
     }, { onConflict: "id" });
   if (error) {
-    console.warn("Nao foi possivel salvar regras oficiais", error);
-    notify("Ainda falta rodar o SQL completo no Supabase.");
+    reportCloudSaveError("regras", error);
     return false;
   }
   saveCloudState();
@@ -716,8 +725,7 @@ async function saveReviewRecord(bookId, review) {
       updated_at: new Date().toISOString(),
     }, { onConflict: "book_id,participant_id" });
   if (error) {
-    console.warn("Nao foi possivel salvar avaliacao oficial", error);
-    notify("Ainda falta rodar o SQL completo no Supabase.");
+    reportCloudSaveError("avaliacao", error);
     return false;
   }
   saveCloudState();
@@ -763,8 +771,7 @@ async function saveMemberLibraryRecord(participant = currentParticipant()) {
       updated_at: new Date().toISOString(),
     }, { onConflict: "participant_id" });
   if (error) {
-    console.warn("Nao foi possivel salvar biblioteca da integrante", error);
-    notify("Ainda falta rodar o SQL completo no Supabase.");
+    reportCloudSaveError("biblioteca da integrante", error);
     return false;
   }
   saveCloudState();
@@ -817,8 +824,7 @@ async function saveFeedRecord(item) {
       updated_at: new Date().toISOString(),
     }, { onConflict: "id" });
   if (error) {
-    console.warn("Nao foi possivel salvar feed oficial", error);
-    notify("Ainda falta rodar o SQL completo no Supabase.");
+    reportCloudSaveError("feed", error);
     return false;
   }
   saveCloudState();
@@ -893,8 +899,7 @@ async function saveMemberProfile(authUser, user = getUser()) {
     .from("club_members")
     .upsert(payload, { onConflict: "user_id" });
   if (error) {
-    console.warn("Nao foi possivel salvar integrante no Supabase", error);
-    notify("Ainda falta rodar o SQL de integrantes no Supabase.");
+    reportCloudSaveError("perfil da integrante", error);
     return false;
   }
   return true;
