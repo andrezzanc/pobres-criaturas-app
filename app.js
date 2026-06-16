@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 3;
+const APP_VERSION = 4;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -206,6 +206,8 @@ async function initApp() {
       const user = ensureClubUser(data.session.user);
       session = { email: user.email };
       localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      await saveMemberProfile(data.session.user, user);
+      await loadMemberProfiles();
       if (stableJson({ users: state.users, participants: state.participants }) !== beforeUserSync) {
         saveState();
       }
@@ -278,6 +280,10 @@ async function handleCloudAuth(event) {
       return;
     }
     const user = ensureClubUser(data.user, { name, profile });
+    session = { email: user.email };
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    await saveMemberProfile(data.user, user);
+    await loadMemberProfiles();
     saveState();
     startSession(user);
     submitButton.disabled = false;
@@ -299,6 +305,10 @@ async function handleCloudAuth(event) {
   }
   const beforeUserSync = stableJson({ users: state.users, participants: state.participants });
   const user = ensureClubUser(data.user);
+  session = { email: user.email };
+  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  await saveMemberProfile(data.user, user);
+  await loadMemberProfiles();
   if (stableJson({ users: state.users, participants: state.participants }) !== beforeUserSync) {
     saveState();
   }
@@ -353,6 +363,7 @@ async function refreshCloudState({ render = false } = {}) {
   const { data: authData } = await clubDb.auth.getSession();
   if (authData.session?.user) {
     ensureClubUser(authData.session.user);
+    await loadMemberProfiles();
     persistLocalState();
   }
   if (render && appShell && !appShell.classList.contains("hidden")) {
@@ -425,6 +436,110 @@ async function fetchCloudState() {
     return null;
   }
   return data;
+}
+
+async function saveMemberProfile(authUser, user = getUser()) {
+  if (!clubDb || !authUser || !user) return false;
+  const participant = participantById(user.participantId);
+  if (!participant) return false;
+  const payload = {
+    user_id: authUser.id,
+    email: user.email,
+    participant_id: participant.id,
+    name: participant.name || user.name || user.email,
+    role: participant.role || "",
+    tone: participant.tone || "gold",
+    favorite_book: participant.favoriteBook || "",
+    favorite_character: participant.favoriteCharacter || "",
+    quote: participant.quote || "",
+    goal: Number(participant.goal || 12),
+    books_read_year: Number(participant.booksReadYear || 0),
+    books_read_club: Number(participant.booksReadClub || 0),
+    genres: participant.genres || [],
+    personality: participant.personality || "emocao",
+    discussion: participant.discussion || "debater",
+    photo: participant.photo || "",
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await clubDb
+    .from("club_members")
+    .upsert(payload, { onConflict: "user_id" });
+  if (error) {
+    console.warn("Nao foi possivel salvar integrante no Supabase", error);
+    notify("Ainda falta rodar o SQL de integrantes no Supabase.");
+    return false;
+  }
+  return true;
+}
+
+async function loadMemberProfiles() {
+  if (!clubDb) return false;
+  const { data, error } = await clubDb
+    .from("club_members")
+    .select("*")
+    .order("created_at", { ascending: true });
+  if (error) {
+    console.warn("Nao foi possivel carregar integrantes do Supabase", error);
+    return false;
+  }
+  mergeMemberProfiles(data || []);
+  return true;
+}
+
+function mergeMemberProfiles(rows = []) {
+  rows.forEach((row) => {
+    const participant = participantFromMemberRow(row);
+    const existingParticipant = participantById(participant.id) || state.participants.find((item) => item.name === participant.name);
+    if (existingParticipant) {
+      Object.assign(existingParticipant, { ...existingParticipant, ...participant });
+    } else {
+      state.participants.push(participant);
+    }
+
+    const existingUser = state.users.find((item) => item.supabaseUserId === row.user_id || item.email === row.email);
+    const user = {
+      name: participant.name,
+      email: row.email,
+      participantId: participant.id,
+      supabaseUserId: row.user_id,
+    };
+    if (existingUser) {
+      Object.assign(existingUser, { ...existingUser, ...user });
+    } else {
+      state.users.push(user);
+    }
+    state.progress[participant.id] ||= {};
+    state.favorites[participant.id] ||= [];
+  });
+  normalizeIndicationOrder();
+  persistLocalState();
+}
+
+function participantFromMemberRow(row) {
+  const profile = {
+    personality: row.personality || "emocao",
+    genre: Array.isArray(row.genres) && row.genres.length ? row.genres[0] : "Leituras surpresa",
+    discussion: row.discussion || "debater",
+    booksReadYear: Number(row.books_read_year || 0),
+    booksReadClub: Number(row.books_read_club || 0),
+    goal: Number(row.goal || 12),
+  };
+  return {
+    id: row.participant_id || row.user_id,
+    name: row.name || row.email?.split("@")[0] || "Integrante",
+    role: row.role || generateRole(profile),
+    tone: row.tone || toneFor(profile.personality),
+    favoriteBook: row.favorite_book || "Ainda escolhendo",
+    favoriteCharacter: row.favorite_character || "Ainda escolhendo",
+    quote: row.quote || "Meu passaporte começou hoje.",
+    goal: profile.goal,
+    booksReadYear: profile.booksReadYear,
+    booksReadClub: profile.booksReadClub,
+    genres: Array.isArray(row.genres) ? row.genres : [profile.genre],
+    personality: profile.personality,
+    discussion: profile.discussion,
+    photo: row.photo || "",
+  };
 }
 
 function ensureClubUser(authUser, signupData = null) {
@@ -1627,6 +1742,14 @@ async function saveProfile(event) {
   participant.quote = data.get("quote");
   const photo = event.currentTarget.elements.photo.files[0];
   if (photo) participant.photo = await readPhoto(photo);
+  if (clubDb) {
+    const { data: authData } = await clubDb.auth.getSession();
+    if (authData.session?.user) {
+      const user = ensureClubUser(authData.session.user);
+      await saveMemberProfile(authData.session.user, user);
+      await loadMemberProfiles();
+    }
+  }
   saveState();
   notify("Perfil salvo no passaporte.");
   renderProfile();
