@@ -282,13 +282,6 @@ async function loadCloudState() {
   }
 
   if (data) {
-    const localTime = Date.parse(state.__localUpdatedAt || "");
-    const cloudTime = Date.parse(data.updated_at || data.data?.__localUpdatedAt || "");
-    const cloudWasIntentionallyReset = data.data && Object.keys(data.data).length === 0;
-    if (!cloudWasIntentionallyReset && Number.isFinite(localTime) && (!Number.isFinite(cloudTime) || localTime > cloudTime + 1000)) {
-      await saveCloudState();
-      return;
-    }
     state = withStateDefaults({ ...clone(seed), ...(data.data || {}) });
     selectedBookId = latestBook()?.id || "";
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
