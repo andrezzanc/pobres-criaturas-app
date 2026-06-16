@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 6;
+const APP_VERSION = 8;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -207,10 +207,9 @@ async function initApp() {
       const user = ensureClubUser(data.session.user);
       session = { email: user.email };
       localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-      await saveMemberProfile(data.session.user, user);
-      await loadMemberProfiles();
+      await ensureMemberProfileRecord(data.session.user, user);
       if (stableJson({ users: state.users, participants: state.participants }) !== beforeUserSync) {
-        saveState();
+        persistLocalState();
       }
     } else {
       session = null;
@@ -285,7 +284,7 @@ async function handleCloudAuth(event) {
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
     await saveMemberProfile(data.user, user);
     await loadMemberProfiles();
-    saveState();
+    persistLocalState();
     startSession(user);
     submitButton.disabled = false;
     return;
@@ -308,10 +307,9 @@ async function handleCloudAuth(event) {
   const user = ensureClubUser(data.user);
   session = { email: user.email };
   localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  await saveMemberProfile(data.user, user);
-  await loadMemberProfiles();
+  await ensureMemberProfileRecord(data.user, user);
   if (stableJson({ users: state.users, participants: state.participants }) !== beforeUserSync) {
-    saveState();
+    persistLocalState();
   }
   startSession(user);
   submitButton.disabled = false;
@@ -577,7 +575,7 @@ async function saveMeetingRecord() {
     reportCloudSaveError("reuniao", error);
     return false;
   }
-  saveCloudState();
+  persistLocalState();
   return true;
 }
 
@@ -613,7 +611,7 @@ async function saveBookRecord(book) {
     return false;
   }
   await loadBookRecords();
-  saveCloudState();
+  persistLocalState();
   return true;
 }
 
@@ -683,7 +681,7 @@ async function saveClubSettingsRecord() {
     reportCloudSaveError("regras", error);
     return false;
   }
-  saveCloudState();
+  persistLocalState();
   return true;
 }
 
@@ -728,7 +726,7 @@ async function saveReviewRecord(bookId, review) {
     reportCloudSaveError("avaliacao", error);
     return false;
   }
-  saveCloudState();
+  persistLocalState();
   return true;
 }
 
@@ -742,23 +740,13 @@ async function loadMemberLibraryRecords() {
     return false;
   }
   if (!data?.length) return false;
-  (data || []).forEach((row) => {
-    const participant = participantById(row.participant_id);
-    if (participant) {
-      participant.currentBookId = row.current_book_id || "";
-      participant.completedBookIds = Array.isArray(row.completed_book_ids) ? row.completed_book_ids : [];
-      participant.booksReadYear = Number(row.books_read_year ?? participant.booksReadYear ?? 0);
-      participant.booksReadClub = Number(row.books_read_club ?? participant.booksReadClub ?? 0);
-    }
-    state.progress[row.participant_id] = row.progress && typeof row.progress === "object" ? row.progress : {};
-    state.favorites[row.participant_id] = Array.isArray(row.favorites) ? row.favorites : [];
-  });
+  mergeMemberLibraryRows(data || []);
   return true;
 }
 
 async function saveMemberLibraryRecord(participant = currentParticipant()) {
   if (!clubDb || !participant) return saveCloudState();
-  const { error } = await clubDb
+  const { data, error } = await clubDb
     .from("club_member_library")
     .upsert({
       participant_id: participant.id,
@@ -769,13 +757,31 @@ async function saveMemberLibraryRecord(participant = currentParticipant()) {
       progress: state.progress[participant.id] || {},
       favorites: state.favorites[participant.id] || [],
       updated_at: new Date().toISOString(),
-    }, { onConflict: "participant_id" });
+    }, { onConflict: "participant_id" })
+    .select("*")
+    .single();
   if (error) {
     reportCloudSaveError("biblioteca da integrante", error);
     return false;
   }
-  saveCloudState();
+  if (data) mergeMemberLibraryRows([data]);
+  persistLocalState();
   return true;
+}
+
+function mergeMemberLibraryRows(rows = []) {
+  (rows || []).forEach((row) => {
+    const participant = participantById(row.participant_id);
+    if (participant) {
+      participant.currentBookId = row.current_book_id || "";
+      participant.completedBookIds = Array.isArray(row.completed_book_ids) ? row.completed_book_ids : [];
+      participant.booksReadYear = Number(row.books_read_year ?? participant.booksReadYear ?? 0);
+      participant.booksReadClub = Number(row.books_read_club ?? participant.booksReadClub ?? 0);
+    }
+    state.progress[row.participant_id] = row.progress && typeof row.progress === "object" ? row.progress : {};
+    state.favorites[row.participant_id] = Array.isArray(row.favorites) ? row.favorites : [];
+  });
+  persistLocalState();
 }
 
 async function loadFeedRecords() {
@@ -827,7 +833,7 @@ async function saveFeedRecord(item) {
     reportCloudSaveError("feed", error);
     return false;
   }
-  saveCloudState();
+  persistLocalState();
   return true;
 }
 
@@ -895,13 +901,78 @@ async function saveMemberProfile(authUser, user = getUser()) {
     photo: participant.photo || "",
     updated_at: new Date().toISOString(),
   };
-  const { error } = await clubDb
+  const { data, error } = await clubDb
     .from("club_members")
-    .upsert(payload, { onConflict: "user_id" });
+    .upsert(payload, { onConflict: "user_id" })
+    .select("*")
+    .single();
   if (error) {
     reportCloudSaveError("perfil da integrante", error);
     return false;
   }
+  if (data) mergeMemberProfiles([data]);
+  return true;
+}
+
+async function ensureMemberProfileRecord(authUser, user = getUser()) {
+  if (!clubDb || !authUser || !user) return false;
+  const { data, error } = await clubDb
+    .from("club_members")
+    .select("*")
+    .eq("user_id", authUser.id)
+    .maybeSingle();
+  if (error) {
+    reportCloudSaveError("perfil da integrante", error);
+    return false;
+  }
+  if (data) {
+    mergeMemberProfiles([data]);
+    return true;
+  }
+  return saveMemberProfile(authUser, user);
+}
+
+async function verifyMemberProfileSaved(authUser, participant) {
+  const { data: profile, error: profileError } = await clubDb
+    .from("club_members")
+    .select("*")
+    .eq("user_id", authUser.id)
+    .maybeSingle();
+  if (profileError || !profile) {
+    reportCloudSaveError("confirmacao do perfil", profileError || { message: "perfil nao encontrado apos salvar" });
+    return false;
+  }
+
+  const { data: library, error: libraryError } = await clubDb
+    .from("club_member_library")
+    .select("*")
+    .eq("participant_id", participant.id)
+    .maybeSingle();
+  if (libraryError || !library) {
+    reportCloudSaveError("confirmacao da biblioteca da integrante", libraryError || { message: "biblioteca nao encontrada apos salvar" });
+    return false;
+  }
+
+  const profileOk =
+    profile.name === participant.name &&
+    (profile.favorite_book || "") === (participant.favoriteBook || "") &&
+    (profile.favorite_character || "") === (participant.favoriteCharacter || "") &&
+    (profile.quote || "") === (participant.quote || "") &&
+    Number(profile.goal || 0) === Number(participant.goal || 0) &&
+    stableJson(profile.genres || []) === stableJson(participant.genres || []);
+
+  const libraryOk =
+    Number(library.books_read_year || 0) === Number(participant.booksReadYear || 0) &&
+    Number(library.books_read_club || 0) === Number(participant.booksReadClub || 0);
+
+  if (!profileOk || !libraryOk) {
+    notify("O Supabase respondeu, mas devolveu dados diferentes. Tente salvar de novo.");
+    console.warn("Divergencia ao confirmar perfil", { profile, library, participant });
+    return false;
+  }
+
+  mergeMemberProfiles([profile]);
+  mergeMemberLibraryRows([library]);
   return true;
 }
 
@@ -2245,18 +2316,20 @@ async function saveProfile(event) {
   if (photo) participant.photo = await readPhoto(photo);
   let profileSaved = true;
   let librarySaved = true;
+  let confirmedOnline = true;
   if (clubDb) {
     const { data: authData } = await clubDb.auth.getSession();
     if (authData.session?.user) {
       const user = ensureClubUser(authData.session.user);
       profileSaved = await saveMemberProfile(authData.session.user, user);
       librarySaved = await saveMemberLibraryRecord(participant);
-      await loadMemberProfiles();
-      await loadMemberLibraryRecords();
+      confirmedOnline = profileSaved && librarySaved
+        ? await verifyMemberProfileSaved(authData.session.user, participant)
+        : false;
     }
   }
-  if (!profileSaved || !librarySaved) {
-    notify("Nao consegui salvar todo o perfil na nuvem. Tente novamente.");
+  if (!profileSaved || !librarySaved || !confirmedOnline) {
+    notify("Nao consegui confirmar o perfil na nuvem. Tente novamente.");
     renderProfile();
     return;
   }
@@ -2669,7 +2742,7 @@ function renderNotificationPanel() {
   notificationPanel.querySelector("[data-enable-push]")?.addEventListener("click", enablePushPrototype);
   notificationPanel.querySelector("[data-test-push]")?.addEventListener("click", () => {
     state.notificationSettings.pushEnabled = true;
-    saveState();
+    persistLocalState();
     sendClubPush("Teste do Pobres Criaturas", "Se este aviso apareceu, o push real chegou neste aparelho.", "test");
     notify("Teste de push enviado.");
   });
@@ -2803,12 +2876,12 @@ async function enablePushPrototype() {
     const registered = await registerPushSubscription();
     if (registered) {
       state.notificationSettings.pushEnabled = true;
-      saveState();
+      persistLocalState();
       notify("Push real ativado neste aparelho.");
       sendPushPrototype("Notificações ativadas", "O Pobres Criaturas vai avisar sobre livros e reuniões.");
     } else {
       state.notificationSettings.pushEnabled = false;
-      saveState();
+      persistLocalState();
     }
     renderNotificationPanel();
     return;
@@ -2822,16 +2895,16 @@ async function enablePushPrototype() {
     const registered = await registerPushSubscription();
     if (registered) {
       state.notificationSettings.pushEnabled = true;
-      saveState();
+      persistLocalState();
       notify("Push real ativado neste aparelho.");
       sendPushPrototype("Notificações ativadas", "Você receberá alertas do clube neste aparelho.");
     } else {
       state.notificationSettings.pushEnabled = false;
-      saveState();
+      persistLocalState();
     }
   } else {
     state.notificationSettings.pushEnabled = false;
-    saveState();
+    persistLocalState();
     notify("Sem permissão de push. A central interna continua funcionando.");
   }
   renderNotificationPanel();
