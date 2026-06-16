@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 11;
+const APP_VERSION = 12;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -316,19 +316,17 @@ async function handleCloudAuth(event) {
 }
 
 async function loadCloudState() {
-  const { data, error } = await clubDb
-    .from("club_state")
-    .select("data, updated_at")
-    .eq("id", CLOUD_STATE_ID)
-    .maybeSingle();
+  const structuredLoaded = await loadStructuredClubData();
+  if (structuredLoaded) return true;
 
-  if (error) {
+  const current = await fetchCloudState();
+  if (!current && state.__cloudError) {
     notify("Nao consegui carregar os dados online. Confira se o SQL da Etapa 7 foi executado.");
     return false;
   }
 
-  if (data) {
-    applyCloudState(data.data || {}, data.updated_at);
+  if (current) {
+    applyCloudState(current.data || {}, current.updated_at);
     await loadStructuredClubData();
     return true;
   }
@@ -348,45 +346,30 @@ function applyCloudState(cloudData, updatedAt = null) {
 async function refreshCloudState({ render = false } = {}) {
   if (!clubDb || !session || cloudRefreshInFlight) return false;
   cloudRefreshInFlight = true;
-  const structuredBefore = stableJson({
-    meeting: state.meeting,
-    books: state.books,
-    participants: state.participants,
-  });
-  await loadStructuredClubData();
-  const { data, error } = await clubDb
-    .from("club_state")
-    .select("data, updated_at")
-    .eq("id", CLOUD_STATE_ID)
-    .maybeSingle();
-  cloudRefreshInFlight = false;
-  const structuredChanged = structuredBefore !== stableJson({
-    meeting: state.meeting,
-    books: state.books,
-    participants: state.participants,
-  });
-  if (error || !data) {
-    if (structuredChanged && render && appShell && !appShell.classList.contains("hidden")) showApp();
-    return structuredChanged;
-  }
-  const remoteTime = Date.parse(data.updated_at || "");
-  const knownTime = Date.parse(cloudUpdatedAt || "");
-  if (cloudUpdatedAt && remoteTime <= knownTime) {
-    if (structuredChanged && render && appShell && !appShell.classList.contains("hidden")) showApp();
-    return structuredChanged;
+  const before = stableJson(state);
+  const structuredLoaded = await loadStructuredClubData();
+
+  if (!structuredLoaded) {
+    const current = await fetchCloudState();
+    if (current) {
+      const remoteTime = Date.parse(current.updated_at || "");
+      const knownTime = Date.parse(cloudUpdatedAt || "");
+      if (!cloudUpdatedAt || remoteTime > knownTime) {
+        applyCloudState(current.data || {}, current.updated_at);
+      }
+    }
   }
 
-  applyCloudState(data.data || {}, data.updated_at);
   const { data: authData } = await clubDb.auth.getSession();
-  if (authData.session?.user) {
-    ensureClubUser(authData.session.user);
-    await loadStructuredClubData();
-    persistLocalState();
-  }
-  if (render && appShell && !appShell.classList.contains("hidden")) {
+  if (authData.session?.user) ensureClubUser(authData.session.user);
+  persistLocalState();
+  cloudRefreshInFlight = false;
+
+  const changed = before !== stableJson(state);
+  if (changed && render && appShell && !appShell.classList.contains("hidden")) {
     showApp();
   }
-  return true;
+  return changed || structuredLoaded;
 }
 
 function queueCloudSave() {
@@ -407,16 +390,6 @@ async function saveCloudState() {
   }
   window.clearTimeout(cloudSaveTimer);
   cloudSaveInFlight = true;
-  const current = await fetchCloudState();
-  if (current) {
-    const remoteTime = Date.parse(current.updated_at || "");
-    const knownTime = Date.parse(cloudUpdatedAt || "");
-    if (!cloudUpdatedAt || remoteTime > knownTime) {
-      state = mergeClubStates(withStateDefaults({ ...clone(seed), ...(current.data || {}) }), state, lastCloudState);
-      cloudUpdatedAt = current.updated_at;
-      persistLocalState();
-    }
-  }
   const payload = clone(state);
   delete payload.__cloudError;
   payload.users = (payload.users || []).map(({ password, ...user }) => user);
@@ -456,7 +429,7 @@ async function saveCloudSnapshot() {
       updated_at: savedAt,
     }, { onConflict: "id" });
   if (error) {
-    reportCloudSaveError("copia geral do clube", error);
+    console.warn("Nao foi possivel atualizar a copia geral do clube", error);
     return false;
   }
   cloudUpdatedAt = savedAt;
@@ -472,33 +445,27 @@ async function fetchCloudState() {
     .maybeSingle();
   if (error) {
     console.warn("Nao foi possivel conferir a versao online", error);
+    state.__cloudError = error.message || "erro ao carregar copia geral";
     return null;
   }
+  delete state.__cloudError;
   return data;
 }
 
 async function loadStructuredClubData() {
   if (!clubDb) return false;
-  const before = stableJson({
-    meeting: state.meeting,
-    books: state.books,
-    participants: state.participants,
-  });
-  await loadMemberProfiles();
-  await loadBookRecords();
-  await loadMeetingRecord();
-  await loadClubSettings();
-  await loadReviewRecords();
-  await loadMemberLibraryRecords();
-  await loadFeedRecords();
-  await loadNotificationRecords();
+  let loadedAny = false;
+  loadedAny = (await loadMemberProfiles()) || loadedAny;
+  loadedAny = (await loadBookRecords()) || loadedAny;
+  loadedAny = (await loadMeetingRecord()) || loadedAny;
+  loadedAny = (await loadClubSettings()) || loadedAny;
+  loadedAny = (await loadReviewRecords()) || loadedAny;
+  loadedAny = (await loadMemberLibraryRecords()) || loadedAny;
+  loadedAny = (await loadFeedRecords()) || loadedAny;
+  loadedAny = (await loadNotificationRecords()) || loadedAny;
   await migrateLegacyStateToTables();
   persistLocalState();
-  return before !== stableJson({
-    meeting: state.meeting,
-    books: state.books,
-    participants: state.participants,
-  });
+  return loadedAny;
 }
 
 async function migrateLegacyStateToTables() {
@@ -598,7 +565,8 @@ async function saveMeetingRecord() {
     return false;
   }
   persistLocalState();
-  return saveCloudSnapshot();
+  await saveCloudSnapshot();
+  return true;
 }
 
 async function loadBookRecords() {
@@ -634,7 +602,8 @@ async function saveBookRecord(book) {
   }
   await loadBookRecords();
   persistLocalState();
-  return saveCloudSnapshot();
+  await saveCloudSnapshot();
+  return true;
 }
 
 function bookRecordFromBook(book) {
@@ -704,7 +673,8 @@ async function saveClubSettingsRecord() {
     return false;
   }
   persistLocalState();
-  return saveCloudSnapshot();
+  await saveCloudSnapshot();
+  return true;
 }
 
 async function loadReviewRecords() {
@@ -749,7 +719,8 @@ async function saveReviewRecord(bookId, review) {
     return false;
   }
   persistLocalState();
-  return saveCloudSnapshot();
+  await saveCloudSnapshot();
+  return true;
 }
 
 async function loadMemberLibraryRecords() {
@@ -786,7 +757,8 @@ async function saveMemberLibraryRecord(participant = currentParticipant()) {
   }
   if (data) mergeMemberLibraryRows([data]);
   persistLocalState();
-  return saveCloudSnapshot();
+  await saveCloudSnapshot();
+  return true;
 }
 
 function mergeMemberLibraryRows(rows = []) {
@@ -852,7 +824,8 @@ async function saveFeedRecord(item) {
     return false;
   }
   persistLocalState();
-  return saveCloudSnapshot();
+  await saveCloudSnapshot();
+  return true;
 }
 
 async function loadNotificationRecords() {
@@ -896,7 +869,8 @@ async function saveNotificationRecord(item) {
     console.warn("Nao foi possivel salvar notificacao oficial", error);
     return false;
   }
-  return saveCloudSnapshot();
+  await saveCloudSnapshot();
+  return true;
 }
 
 async function saveMemberProfile(authUser, user = getUser(), participantOverride = null) {
@@ -932,8 +906,27 @@ async function saveMemberProfile(authUser, user = getUser(), participantOverride
     reportCloudSaveError("perfil da integrante", error);
     return false;
   }
-  if (data) mergeMemberProfiles([data]);
-  return saveCloudSnapshot();
+  let savedProfile = data;
+  const savedCountersDiffer =
+    Number(savedProfile?.books_read_year || 0) !== Number(payload.books_read_year || 0) ||
+    Number(savedProfile?.books_read_club || 0) !== Number(payload.books_read_club || 0);
+  if (savedCountersDiffer) {
+    const { user_id, ...updatePayload } = payload;
+    const retry = await clubDb
+      .from("club_members")
+      .update(updatePayload)
+      .eq("user_id", authUser.id)
+      .select("*")
+      .single();
+    if (retry.error) {
+      reportCloudSaveError("perfil da integrante", retry.error);
+      return false;
+    }
+    savedProfile = retry.data;
+  }
+  if (savedProfile) mergeMemberProfiles([savedProfile]);
+  await saveCloudSnapshot();
+  return true;
 }
 
 async function ensureMemberProfileRecord(authUser, user = getUser()) {
@@ -2348,6 +2341,7 @@ async function saveRules(event) {
 
 async function saveProfile(event) {
   event.preventDefault();
+  lastProfileSaveIssue = "";
   const data = new FormData(event.currentTarget);
   const participant = currentParticipant();
   const user = getUser();
@@ -2381,7 +2375,7 @@ async function saveProfile(event) {
     }
   }
   if (!profileSaved || !librarySaved || !confirmedOnline) {
-    notify(lastProfileSaveIssue ? `Nao confirmou: ${lastProfileSaveIssue}.` : "Nao consegui confirmar o perfil na nuvem. Tente novamente.");
+    notify(lastProfileSaveIssue ? `Nao confirmou (v${APP_VERSION}): ${lastProfileSaveIssue}.` : `Nao consegui confirmar o perfil na nuvem (v${APP_VERSION}). Tente novamente.`);
     renderProfile();
     return;
   }
