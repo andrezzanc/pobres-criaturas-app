@@ -1899,12 +1899,15 @@ async function enablePushPrototype() {
     return;
   }
   if (Notification.permission === "granted") {
-    state.notificationSettings.pushEnabled = true;
-    saveState();
     const registered = await registerPushSubscription();
     if (registered) {
+      state.notificationSettings.pushEnabled = true;
+      saveState();
       notify("Push real ativado neste aparelho.");
       sendPushPrototype("Notificações ativadas", "O Pobres Criaturas vai avisar sobre livros e reuniões.");
+    } else {
+      state.notificationSettings.pushEnabled = false;
+      saveState();
     }
     renderNotificationPanel();
     return;
@@ -1914,15 +1917,20 @@ async function enablePushPrototype() {
     return;
   }
   const permission = await Notification.requestPermission();
-  state.notificationSettings.pushEnabled = permission === "granted";
-  saveState();
   if (permission === "granted") {
     const registered = await registerPushSubscription();
     if (registered) {
+      state.notificationSettings.pushEnabled = true;
+      saveState();
       notify("Push real ativado neste aparelho.");
       sendPushPrototype("Notificações ativadas", "Você receberá alertas do clube neste aparelho.");
+    } else {
+      state.notificationSettings.pushEnabled = false;
+      saveState();
     }
   } else {
+    state.notificationSettings.pushEnabled = false;
+    saveState();
     notify("Sem permissão de push. A central interna continua funcionando.");
   }
   renderNotificationPanel();
@@ -1954,11 +1962,20 @@ async function registerPushSubscription() {
       },
       body: JSON.stringify({ subscription: subscription.toJSON() }),
     });
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) {
+      let serverMessage = "Não consegui salvar este aparelho no servidor de push.";
+      try {
+        const body = await response.json();
+        if (body?.error) serverMessage = body.error;
+      } catch {
+        serverMessage = await response.text();
+      }
+      throw new Error(serverMessage);
+    }
     return true;
   } catch (error) {
     console.warn("Nao foi possivel registrar push", error);
-    notify("Não consegui registrar este aparelho para push real.");
+    notify(error.message || "Não consegui salvar este aparelho no servidor de push.");
     return false;
   }
 }
