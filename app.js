@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 13;
+const APP_VERSION = 14;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -63,6 +63,8 @@ let cloudRefreshInFlight = false;
 let notificationHistoryOpen = false;
 let suppressCloudAlerts = false;
 let lastProfileSaveIssue = "";
+let lastSavedMemberProfile = null;
+let lastSavedMemberLibrary = null;
 
 const bootScreen = document.querySelector("#boot-screen");
 const authScreen = document.querySelector("#auth-screen");
@@ -767,6 +769,7 @@ async function saveMemberLibraryRecord(participant = currentParticipant()) {
     reportCloudSaveError("biblioteca da integrante", { message: saved.error });
     return false;
   }
+  lastSavedMemberLibrary = saved.data || null;
   if (saved.data) mergeMemberLibraryRows([saved.data]);
   persistLocalState();
   await saveCloudSnapshot();
@@ -915,9 +918,10 @@ async function saveMemberProfile(authUser, user = getUser(), participantOverride
     Number(savedProfile?.books_read_year || 0) !== Number(payload.books_read_year || 0) ||
     Number(savedProfile?.books_read_club || 0) !== Number(payload.books_read_club || 0);
   if (savedCountersDiffer) {
-    reportCloudSaveError("perfil da integrante", { message: "servidor salvou os contadores com valores diferentes" });
+    reportCloudSaveError("perfil da integrante", { message: `servidor voltou ${Number(savedProfile?.books_read_year || 0)}/${Number(savedProfile?.books_read_club || 0)}, mas tentei salvar ${payload.books_read_year}/${payload.books_read_club}` });
     return false;
   }
+  lastSavedMemberProfile = savedProfile || null;
   if (savedProfile) mergeMemberProfiles([savedProfile]);
   await saveCloudSnapshot();
   return true;
@@ -943,35 +947,43 @@ async function ensureMemberProfileRecord(authUser, user = getUser()) {
 
 async function verifyMemberProfileSaved(authUser, participant) {
   lastProfileSaveIssue = "";
-  let { data: profile, error: profileError } = await clubDb
-    .from("club_members")
-    .select("*")
-    .eq("user_id", authUser.id)
-    .maybeSingle();
-  if (!profile && !profileError) {
-    const fallback = await clubDb
+  let profile = lastSavedMemberProfile?.user_id === authUser.id ? lastSavedMemberProfile : null;
+  if (!profile) {
+    let { data, error: profileError } = await clubDb
       .from("club_members")
+      .select("*")
+      .eq("user_id", authUser.id)
+      .maybeSingle();
+    if (!data && !profileError) {
+      const fallback = await clubDb
+        .from("club_members")
+        .select("*")
+        .eq("participant_id", participant.id)
+        .maybeSingle();
+      data = fallback.data;
+      profileError = fallback.error;
+    }
+    if (profileError || !data) {
+      lastProfileSaveIssue = profileError?.message || "perfil nao encontrado apos salvar";
+      reportCloudSaveError("confirmacao do perfil", profileError || { message: lastProfileSaveIssue });
+      return false;
+    }
+    profile = data;
+  }
+
+  let library = lastSavedMemberLibrary?.participant_id === participant.id ? lastSavedMemberLibrary : null;
+  if (!library) {
+    const { data, error: libraryError } = await clubDb
+      .from("club_member_library")
       .select("*")
       .eq("participant_id", participant.id)
       .maybeSingle();
-    profile = fallback.data;
-    profileError = fallback.error;
-  }
-  if (profileError || !profile) {
-    lastProfileSaveIssue = profileError?.message || "perfil nao encontrado apos salvar";
-    reportCloudSaveError("confirmacao do perfil", profileError || { message: lastProfileSaveIssue });
-    return false;
-  }
-
-  const { data: library, error: libraryError } = await clubDb
-    .from("club_member_library")
-    .select("*")
-    .eq("participant_id", participant.id)
-    .maybeSingle();
-  if (libraryError || !library) {
-    lastProfileSaveIssue = libraryError?.message || "biblioteca nao encontrada apos salvar";
-    reportCloudSaveError("confirmacao da biblioteca da integrante", libraryError || { message: lastProfileSaveIssue });
-    return false;
+    if (libraryError || !data) {
+      lastProfileSaveIssue = libraryError?.message || "biblioteca nao encontrada apos salvar";
+      reportCloudSaveError("confirmacao da biblioteca da integrante", libraryError || { message: lastProfileSaveIssue });
+      return false;
+    }
+    library = data;
   }
 
   const differences = [];
@@ -985,7 +997,7 @@ async function verifyMemberProfileSaved(authUser, participant) {
   if (Number(profile.books_read_club || 0) !== Number(participant.booksReadClub || 0)) differences.push("lidos no clube");
 
   if (differences.length) {
-    lastProfileSaveIssue = `campos nao confirmados: ${differences.join(", ")}`;
+    lastProfileSaveIssue = `campos nao confirmados: ${differences.join(", ")}; tentei ${participant.booksReadYear || 0}/${participant.booksReadClub || 0}, servidor confirmou ${Number(profile.books_read_year || 0)}/${Number(profile.books_read_club || 0)}`;
     notify(`O Supabase salvou diferente: ${differences.join(", ")}.`);
     console.warn("Divergencia ao confirmar perfil", { differences, profile, library, participant });
     return false;
