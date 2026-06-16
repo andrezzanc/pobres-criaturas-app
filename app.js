@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 15;
+const APP_VERSION = 16;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -479,19 +479,40 @@ async function saveRecordOnServer(table, payload) {
   }
 }
 
+async function loadRecordsFromServer(table) {
+  try {
+    const token = await accessToken();
+    if (!token) return { ok: false, error: "sessao ausente", data: [] };
+    const response = await fetch(`./api/load-records?table=${encodeURIComponent(table)}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    let body = null;
+    try {
+      body = await response.json();
+    } catch {
+      body = { error: await response.text() };
+    }
+    if (!response.ok || !body?.ok) {
+      return { ok: false, error: body?.error || "servidor nao confirmou a sincronizacao", data: [] };
+    }
+    return { ok: true, data: Array.isArray(body.data) ? body.data : [] };
+  } catch (error) {
+    console.warn("Servidor de sincronizacao indisponivel", error);
+    return { ok: false, error: error.message || "servidor de sincronizacao indisponivel", data: [] };
+  }
+}
+
 async function fetchCloudState() {
-  const { data, error } = await clubDb
-    .from("club_state")
-    .select("data, updated_at")
-    .eq("id", CLOUD_STATE_ID)
-    .maybeSingle();
-  if (error) {
-    console.warn("Nao foi possivel conferir a versao online", error);
-    state.__cloudError = error.message || "erro ao carregar copia geral";
+  const result = await loadRecordsFromServer("club_state");
+  if (!result.ok) {
+    console.warn("Nao foi possivel conferir a versao online", result.error);
+    state.__cloudError = result.error || "erro ao carregar copia geral";
     return null;
   }
   delete state.__cloudError;
-  return data;
+  return result.data.find((row) => row.id === CLOUD_STATE_ID) || null;
 }
 
 async function loadStructuredClubData() {
@@ -505,7 +526,6 @@ async function loadStructuredClubData() {
   loadedAny = (await loadMemberLibraryRecords()) || loadedAny;
   loadedAny = (await loadFeedRecords()) || loadedAny;
   loadedAny = (await loadNotificationRecords()) || loadedAny;
-  await migrateLegacyStateToTables();
   persistLocalState();
   return loadedAny;
 }
@@ -567,15 +587,12 @@ function reportCloudSaveError(area, error) {
 
 async function loadMeetingRecord() {
   if (!clubDb) return false;
-  const { data, error } = await clubDb
-    .from("club_meeting")
-    .select("*")
-    .eq("id", "current")
-    .maybeSingle();
-  if (error) {
-    console.warn("Nao foi possivel carregar reuniao oficial", error);
+  const result = await loadRecordsFromServer("club_meeting");
+  if (!result.ok) {
+    console.warn("Nao foi possivel carregar reuniao oficial", result.error);
     return false;
   }
+  const data = result.data.find((row) => row.id === "current");
   if (!data) return false;
   const hasMeeting = data.date || data.time || data.book_id || data.place || data.notes;
   if (!hasMeeting) return false;
@@ -611,16 +628,14 @@ async function saveMeetingRecord() {
 
 async function loadBookRecords() {
   if (!clubDb) return false;
-  const { data, error } = await clubDb
-    .from("club_books")
-    .select("*")
-    .order("year", { ascending: false })
-    .order("month_index", { ascending: false })
-    .order("created_at", { ascending: false });
-  if (error) {
-    console.warn("Nao foi possivel carregar livros oficiais", error);
+  const result = await loadRecordsFromServer("club_books");
+  if (!result.ok) {
+    console.warn("Nao foi possivel carregar livros oficiais", result.error);
     return false;
   }
+  const data = result.data
+    .slice()
+    .sort((a, b) => Number(b.year || 0) - Number(a.year || 0) || Number(b.month_index || 0) - Number(a.month_index || 0) || Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0));
   if (!data?.length) return false;
   const officialBooks = data.map(bookFromRecord);
   state.books = mergeById(officialBooks, state.books, lastCloudState?.books);
@@ -680,15 +695,12 @@ function bookFromRecord(row) {
 
 async function loadClubSettings() {
   if (!clubDb) return false;
-  const { data, error } = await clubDb
-    .from("club_settings")
-    .select("*")
-    .eq("id", "main")
-    .maybeSingle();
-  if (error) {
-    console.warn("Nao foi possivel carregar regras oficiais", error);
+  const result = await loadRecordsFromServer("club_settings");
+  if (!result.ok) {
+    console.warn("Nao foi possivel carregar regras oficiais", result.error);
     return false;
   }
+  const data = result.data.find((row) => row.id === "main");
   if (!data) return false;
   if (data.rules) state.rules = data.rules;
   if (Array.isArray(data.indication_order)) state.indicationOrder = data.indication_order;
@@ -715,14 +727,12 @@ async function saveClubSettingsRecord() {
 
 async function loadReviewRecords() {
   if (!clubDb) return false;
-  const { data, error } = await clubDb
-    .from("club_reviews")
-    .select("*")
-    .order("updated_at", { ascending: false });
-  if (error) {
-    console.warn("Nao foi possivel carregar avaliacoes oficiais", error);
+  const result = await loadRecordsFromServer("club_reviews");
+  if (!result.ok) {
+    console.warn("Nao foi possivel carregar avaliacoes oficiais", result.error);
     return false;
   }
+  const data = result.data.slice().sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0));
   if (!data?.length) return false;
   (data || []).forEach((row) => {
     state.reviews[row.book_id] ||= [];
@@ -759,13 +769,12 @@ async function saveReviewRecord(bookId, review) {
 
 async function loadMemberLibraryRecords() {
   if (!clubDb) return false;
-  const { data, error } = await clubDb
-    .from("club_member_library")
-    .select("*");
-  if (error) {
-    console.warn("Nao foi possivel carregar biblioteca das integrantes", error);
+  const result = await loadRecordsFromServer("club_member_library");
+  if (!result.ok) {
+    console.warn("Nao foi possivel carregar biblioteca das integrantes", result.error);
     return false;
   }
+  const data = result.data;
   if (!data?.length) return false;
   mergeMemberLibraryRows(data || []);
   return true;
@@ -807,14 +816,12 @@ function mergeMemberLibraryRows(rows = []) {
 
 async function loadFeedRecords() {
   if (!clubDb) return false;
-  const { data, error } = await clubDb
-    .from("club_feed")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) {
-    console.warn("Nao foi possivel carregar feed oficial", error);
+  const result = await loadRecordsFromServer("club_feed");
+  if (!result.ok) {
+    console.warn("Nao foi possivel carregar feed oficial", result.error);
     return false;
   }
+  const data = result.data.slice().sort((a, b) => Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0));
   if (!data?.length) return false;
   const officialFeed = (data || []).map((row) => ({
     id: row.id,
@@ -859,15 +866,12 @@ async function saveFeedRecord(item) {
 
 async function loadNotificationRecords() {
   if (!clubDb) return false;
-  const { data, error } = await clubDb
-    .from("club_notifications")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(40);
-  if (error) {
-    console.warn("Nao foi possivel carregar notificacoes oficiais", error);
+  const result = await loadRecordsFromServer("club_notifications");
+  if (!result.ok) {
+    console.warn("Nao foi possivel carregar notificacoes oficiais", result.error);
     return false;
   }
+  const data = result.data.slice().sort((a, b) => Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0)).slice(0, 40);
   if (!data?.length) return false;
   const localReads = new Set((state.notifications || []).filter((item) => item.read).map((item) => item.id));
   const officialNotifications = (data || []).map((row) => ({
@@ -1033,15 +1037,14 @@ function normalizeList(value) {
 
 async function loadMemberProfiles() {
   if (!clubDb) return false;
-  const { data, error } = await clubDb
-    .from("club_members")
-    .select("*")
-    .order("created_at", { ascending: true })
-    .order("updated_at", { ascending: true });
-  if (error) {
-    console.warn("Nao foi possivel carregar integrantes do Supabase", error);
+  const result = await loadRecordsFromServer("club_members");
+  if (!result.ok) {
+    console.warn("Nao foi possivel carregar integrantes do Supabase", result.error);
     return false;
   }
+  const data = result.data
+    .slice()
+    .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0) || Date.parse(a.updated_at || 0) - Date.parse(b.updated_at || 0));
   mergeMemberProfiles(data || []);
   return true;
 }
