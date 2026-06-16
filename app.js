@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 12;
+const APP_VERSION = 13;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -394,16 +394,14 @@ async function saveCloudState() {
   delete payload.__cloudError;
   payload.users = (payload.users || []).map(({ password, ...user }) => user);
   const savedAt = new Date().toISOString();
-  const { error } = await clubDb
-    .from("club_state")
-    .upsert({
-      id: CLOUD_STATE_ID,
-      data: payload,
-      updated_at: savedAt,
-    });
+  const saved = await saveRecordOnServer("club_state", {
+    id: CLOUD_STATE_ID,
+    data: payload,
+    updated_at: savedAt,
+  });
   cloudSaveInFlight = false;
-  if (error) {
-    console.warn("Nao foi possivel salvar no Supabase", error);
+  if (!saved.ok) {
+    console.warn("Nao foi possivel salvar no Supabase", saved.error);
     return false;
   }
   if (cloudSavePending) {
@@ -421,20 +419,46 @@ async function saveCloudSnapshot() {
   delete payload.__cloudError;
   payload.users = (payload.users || []).map(({ password, ...user }) => user);
   const savedAt = new Date().toISOString();
-  const { error } = await clubDb
-    .from("club_state")
-    .upsert({
-      id: CLOUD_STATE_ID,
-      data: payload,
-      updated_at: savedAt,
-    }, { onConflict: "id" });
-  if (error) {
-    console.warn("Nao foi possivel atualizar a copia geral do clube", error);
+  const saved = await saveRecordOnServer("club_state", {
+    id: CLOUD_STATE_ID,
+    data: payload,
+    updated_at: savedAt,
+  });
+  if (!saved.ok) {
+    console.warn("Nao foi possivel atualizar a copia geral do clube", saved.error);
     return false;
   }
   cloudUpdatedAt = savedAt;
   lastCloudState = clone(state);
   return true;
+}
+
+async function saveRecordOnServer(table, payload) {
+  try {
+    const token = await accessToken();
+    if (!token) return { ok: false, error: "sessao ausente" };
+    const response = await fetch("./api/save-record", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ table, payload }),
+    });
+    let body = null;
+    try {
+      body = await response.json();
+    } catch {
+      body = { error: await response.text() };
+    }
+    if (!response.ok || !body?.ok) {
+      return { ok: false, error: body?.error || "servidor nao confirmou o salvamento" };
+    }
+    return { ok: true, data: body.data || null };
+  } catch (error) {
+    console.warn("Servidor de salvamento indisponivel", error);
+    return { ok: false, error: error.message || "servidor de salvamento indisponivel" };
+  }
 }
 
 async function fetchCloudState() {
@@ -549,19 +573,17 @@ async function loadMeetingRecord() {
 
 async function saveMeetingRecord() {
   if (!clubDb) return saveCloudState();
-  const { error } = await clubDb
-    .from("club_meeting")
-    .upsert({
-      id: "current",
-      date: state.meeting.date || "",
-      time: state.meeting.time || "",
-      book_id: state.meeting.bookId || "",
-      place: state.meeting.place || "",
-      notes: state.meeting.notes || "",
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "id" });
-  if (error) {
-    reportCloudSaveError("reuniao", error);
+  const saved = await saveRecordOnServer("club_meeting", {
+    id: "current",
+    date: state.meeting.date || "",
+    time: state.meeting.time || "",
+    book_id: state.meeting.bookId || "",
+    place: state.meeting.place || "",
+    notes: state.meeting.notes || "",
+    updated_at: new Date().toISOString(),
+  });
+  if (!saved.ok) {
+    reportCloudSaveError("reuniao", { message: saved.error });
     return false;
   }
   persistLocalState();
@@ -593,11 +615,9 @@ async function loadBookRecords() {
 
 async function saveBookRecord(book) {
   if (!clubDb || !book) return saveCloudState();
-  const { error } = await clubDb
-    .from("club_books")
-    .upsert(bookRecordFromBook(book), { onConflict: "id" });
-  if (error) {
-    reportCloudSaveError("livro", error);
+  const saved = await saveRecordOnServer("club_books", bookRecordFromBook(book));
+  if (!saved.ok) {
+    reportCloudSaveError("livro", { message: saved.error });
     return false;
   }
   await loadBookRecords();
@@ -660,16 +680,14 @@ async function loadClubSettings() {
 
 async function saveClubSettingsRecord() {
   if (!clubDb) return saveCloudState();
-  const { error } = await clubDb
-    .from("club_settings")
-    .upsert({
-      id: "main",
-      rules: state.rules || "",
-      indication_order: state.indicationOrder || [],
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "id" });
-  if (error) {
-    reportCloudSaveError("regras", error);
+  const saved = await saveRecordOnServer("club_settings", {
+    id: "main",
+    rules: state.rules || "",
+    indication_order: state.indicationOrder || [],
+    updated_at: new Date().toISOString(),
+  });
+  if (!saved.ok) {
+    reportCloudSaveError("regras", { message: saved.error });
     return false;
   }
   persistLocalState();
@@ -704,18 +722,16 @@ async function loadReviewRecords() {
 
 async function saveReviewRecord(bookId, review) {
   if (!clubDb) return saveCloudState();
-  const { error } = await clubDb
-    .from("club_reviews")
-    .upsert({
-      book_id: bookId,
-      participant_id: review.participantId,
-      rating: Number(review.rating || 0),
-      three_words: review.threeWords || "",
-      deep_review: review.deepReview || review.comment || "",
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "book_id,participant_id" });
-  if (error) {
-    reportCloudSaveError("avaliacao", error);
+  const saved = await saveRecordOnServer("club_reviews", {
+    book_id: bookId,
+    participant_id: review.participantId,
+    rating: Number(review.rating || 0),
+    three_words: review.threeWords || "",
+    deep_review: review.deepReview || review.comment || "",
+    updated_at: new Date().toISOString(),
+  });
+  if (!saved.ok) {
+    reportCloudSaveError("avaliacao", { message: saved.error });
     return false;
   }
   persistLocalState();
@@ -739,23 +755,19 @@ async function loadMemberLibraryRecords() {
 
 async function saveMemberLibraryRecord(participant = currentParticipant()) {
   if (!clubDb || !participant) return saveCloudState();
-  const { data, error } = await clubDb
-    .from("club_member_library")
-    .upsert({
-      participant_id: participant.id,
-      current_book_id: participant.currentBookId || "",
-      completed_book_ids: participant.completedBookIds || [],
-      progress: state.progress[participant.id] || {},
-      favorites: state.favorites[participant.id] || [],
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "participant_id" })
-    .select("*")
-    .single();
-  if (error) {
-    reportCloudSaveError("biblioteca da integrante", error);
+  const saved = await saveRecordOnServer("club_member_library", {
+    participant_id: participant.id,
+    current_book_id: participant.currentBookId || "",
+    completed_book_ids: participant.completedBookIds || [],
+    progress: state.progress[participant.id] || {},
+    favorites: state.favorites[participant.id] || [],
+    updated_at: new Date().toISOString(),
+  });
+  if (!saved.ok) {
+    reportCloudSaveError("biblioteca da integrante", { message: saved.error });
     return false;
   }
-  if (data) mergeMemberLibraryRows([data]);
+  if (saved.data) mergeMemberLibraryRows([saved.data]);
   persistLocalState();
   await saveCloudSnapshot();
   return true;
@@ -804,23 +816,21 @@ async function loadFeedRecords() {
 
 async function saveFeedRecord(item) {
   if (!clubDb || !item) return saveCloudState();
-  const { error } = await clubDb
-    .from("club_feed")
-    .upsert({
-      id: item.id,
-      participant_id: item.participantId,
-      book_id: item.bookId,
-      date: item.date || new Date().toLocaleDateString("pt-BR"),
-      type: item.type || "",
-      text: item.text || "",
-      progress: Number(item.progress || 0),
-      liked_by: item.likedBy || [],
-      comments: item.comments || [],
-      edited_at: item.editedAt || "",
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "id" });
-  if (error) {
-    reportCloudSaveError("feed", error);
+  const saved = await saveRecordOnServer("club_feed", {
+    id: item.id,
+    participant_id: item.participantId,
+    book_id: item.bookId,
+    date: item.date || new Date().toLocaleDateString("pt-BR"),
+    type: item.type || "",
+    text: item.text || "",
+    progress: Number(item.progress || 0),
+    liked_by: item.likedBy || [],
+    comments: item.comments || [],
+    edited_at: item.editedAt || "",
+    updated_at: new Date().toISOString(),
+  });
+  if (!saved.ok) {
+    reportCloudSaveError("feed", { message: saved.error });
     return false;
   }
   persistLocalState();
@@ -855,18 +865,16 @@ async function loadNotificationRecords() {
 
 async function saveNotificationRecord(item) {
   if (!clubDb || !item) return false;
-  const { error } = await clubDb
-    .from("club_notifications")
-    .upsert({
-      id: item.id,
-      type: item.type || "",
-      title: item.title || "",
-      message: item.message || "",
-      date: item.date || "",
-      created_at: new Date().toISOString(),
-    }, { onConflict: "id" });
-  if (error) {
-    console.warn("Nao foi possivel salvar notificacao oficial", error);
+  const saved = await saveRecordOnServer("club_notifications", {
+    id: item.id,
+    type: item.type || "",
+    title: item.title || "",
+    message: item.message || "",
+    date: item.date || "",
+    created_at: new Date().toISOString(),
+  });
+  if (!saved.ok) {
+    console.warn("Nao foi possivel salvar notificacao oficial", saved.error);
     return false;
   }
   await saveCloudSnapshot();
@@ -897,32 +905,18 @@ async function saveMemberProfile(authUser, user = getUser(), participantOverride
     photo: participant.photo || "",
     updated_at: new Date().toISOString(),
   };
-  const { data, error } = await clubDb
-    .from("club_members")
-    .upsert(payload, { onConflict: "user_id" })
-    .select("*")
-    .single();
-  if (error) {
-    reportCloudSaveError("perfil da integrante", error);
+  const saved = await saveRecordOnServer("club_members", payload);
+  if (!saved.ok) {
+    reportCloudSaveError("perfil da integrante", { message: saved.error });
     return false;
   }
-  let savedProfile = data;
+  const savedProfile = saved.data || payload;
   const savedCountersDiffer =
     Number(savedProfile?.books_read_year || 0) !== Number(payload.books_read_year || 0) ||
     Number(savedProfile?.books_read_club || 0) !== Number(payload.books_read_club || 0);
   if (savedCountersDiffer) {
-    const { user_id, ...updatePayload } = payload;
-    const retry = await clubDb
-      .from("club_members")
-      .update(updatePayload)
-      .eq("user_id", authUser.id)
-      .select("*")
-      .single();
-    if (retry.error) {
-      reportCloudSaveError("perfil da integrante", retry.error);
-      return false;
-    }
-    savedProfile = retry.data;
+    reportCloudSaveError("perfil da integrante", { message: "servidor salvou os contadores com valores diferentes" });
+    return false;
   }
   if (savedProfile) mergeMemberProfiles([savedProfile]);
   await saveCloudSnapshot();
