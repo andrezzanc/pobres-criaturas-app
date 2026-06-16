@@ -49,8 +49,30 @@ module.exports = async function handler(req, res) {
     }
 
     const saved = await supabaseJson(response);
-    return json(res, 200, { ok: true, data: Array.isArray(saved) ? saved[0] : saved });
+    let savedRow = Array.isArray(saved) ? saved[0] : saved;
+    if (!savedRow) {
+      const readResponse = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${body.table}?${recordFilter(config.conflict, payload)}&select=*`, {
+        headers: serviceHeaders(),
+      });
+      if (!readResponse.ok) {
+        return json(res, 500, {
+          error: await supabaseError(readResponse, `Salvei, mas nao consegui confirmar ${body.table}`),
+        });
+      }
+      const rows = await supabaseJson(readResponse);
+      savedRow = Array.isArray(rows) ? rows[0] : rows;
+    }
+    return json(res, 200, { ok: true, data: savedRow });
   } catch (error) {
     return json(res, error.statusCode || 500, { error: error.message || "Erro ao salvar no servidor." });
   }
 };
+
+function recordFilter(conflict, payload) {
+  const params = new URLSearchParams();
+  conflict.split(",").forEach((column) => {
+    const name = column.trim();
+    params.set(name, `eq.${payload[name]}`);
+  });
+  return params.toString();
+}
