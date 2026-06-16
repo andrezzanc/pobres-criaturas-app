@@ -60,6 +60,7 @@ let currentView = "home";
 let selectedBookId = latestBook()?.id || "";
 let meetingEditing = false;
 let bookFormMode = null;
+let bookFormDraft = null;
 let feedComposerOpen = false;
 let feedEditId = null;
 let feedCommentId = null;
@@ -1720,6 +1721,7 @@ function renderPassport() {
 }
 
 function renderBooks() {
+  if (bookFormMode) captureBookFormDraft();
   const selected = bookById(selectedBookId) || latestBook();
   if (selected) selectedBookId = selected.id;
   viewRoot.innerHTML = `
@@ -1744,17 +1746,24 @@ function renderBooks() {
 
   document.querySelector("[data-open-book-form]")?.addEventListener("click", () => {
     bookFormMode = "create";
+    bookFormDraft = null;
     renderBooks();
   });
   document.querySelector("#book-form")?.addEventListener("submit", saveBook);
+  document.querySelector("#book-form")?.addEventListener("input", captureBookFormDraft);
+  document.querySelector("#book-form")?.addEventListener("change", captureBookFormDraft);
   document.querySelector("[data-cancel-book-form]")?.addEventListener("click", () => {
     bookFormMode = null;
+    bookFormDraft = null;
     renderBooks();
   });
   document.querySelectorAll("[data-book]").forEach((button) => {
     button.addEventListener("click", () => {
       selectedBookId = button.dataset.book;
-      if (bookFormMode === "edit") bookFormMode = null;
+      if (bookFormMode === "edit") {
+        bookFormMode = null;
+        bookFormDraft = null;
+      }
       reviewFormOpen = false;
       renderBooks();
     });
@@ -1844,24 +1853,43 @@ function reviewFormHtml(book, ownReview) {
 
 function bookFormHtml(book) {
   const isEdit = Boolean(book);
+  const draft = bookFormDraft && (bookFormDraft.bookId || "") === (book?.id || "") ? bookFormDraft : {};
+  const field = (name, fallback = "") => draft[name] ?? fallback ?? "";
   return `
     <form id="book-form" class="book-form">
-      <input type="hidden" name="bookId" value="${book?.id || ""}" />
-      <label><span>Título</span><input name="title" required placeholder="Nome do livro" value="${escapeAttr(book?.title || "")}" /></label>
-      <label><span>Autoria</span><input name="author" required placeholder="Autora ou autor" value="${escapeAttr(book?.author || "")}" /></label>
-      <label><span>Mês</span>${monthSelect(book?.month)}</label>
-      <label><span>Ano</span><input name="year" type="number" min="1900" max="2100" value="${book?.year || new Date().getFullYear()}" required /></label>
-      <label><span>Quem indicou</span>${participantSelect(book?.indicatedBy)}</label>
-      <label><span>Gênero</span><input name="genre" placeholder="Suspense, romance, fantasia..." value="${escapeAttr(book?.genre || "")}" /></label>
-      <label><span>Páginas</span><input name="pages" type="number" min="1" placeholder="304" value="${book?.pages || ""}" /></label>
+      <input type="hidden" name="bookId" value="${escapeAttr(field("bookId", book?.id || ""))}" />
+      <label><span>Título</span><input name="title" required placeholder="Nome do livro" value="${escapeAttr(field("title", book?.title || ""))}" /></label>
+      <label><span>Autoria</span><input name="author" required placeholder="Autora ou autor" value="${escapeAttr(field("author", book?.author || ""))}" /></label>
+      <label><span>Mês</span>${monthSelect(field("month", book?.month))}</label>
+      <label><span>Ano</span><input name="year" type="number" min="1900" max="2100" value="${escapeAttr(field("year", book?.year || new Date().getFullYear()))}" required /></label>
+      <label><span>Quem indicou</span>${participantSelect(field("indicatedBy", book?.indicatedBy || currentParticipant()?.id))}</label>
+      <label><span>Gênero</span><input name="genre" placeholder="Suspense, romance, fantasia..." value="${escapeAttr(field("genre", book?.genre || ""))}" /></label>
+      <label><span>Páginas</span><input name="pages" type="number" min="1" placeholder="304" value="${escapeAttr(field("pages", book?.pages || ""))}" /></label>
       <label><span>${isEdit ? "Alterar capa" : "Capa do livro"}</span><input name="coverImage" type="file" accept="image/*" /></label>
-      <label class="wide"><span>Sinopse ou observação</span><textarea name="synopsis" placeholder="Por que esse livro entrou no clube?">${escapeHtml(book?.synopsis || "")}</textarea></label>
+      <label class="wide"><span>Sinopse ou observação</span><textarea name="synopsis" placeholder="Por que esse livro entrou no clube?">${escapeHtml(field("synopsis", book?.synopsis || ""))}</textarea></label>
       <div class="button-row wide">
         <button class="save-button" type="submit">${isEdit ? "Salvar alterações" : "Salvar livro"}</button>
         <button class="ghost-button" type="button" data-cancel-book-form>Cancelar</button>
       </div>
     </form>
   `;
+}
+
+function captureBookFormDraft() {
+  const form = document.querySelector("#book-form");
+  if (!form) return;
+  const data = new FormData(form);
+  bookFormDraft = {
+    bookId: data.get("bookId") || "",
+    title: data.get("title") || "",
+    author: data.get("author") || "",
+    month: data.get("month") || "",
+    year: data.get("year") || "",
+    indicatedBy: data.get("indicatedBy") || "",
+    genre: data.get("genre") || "",
+    pages: data.get("pages") || "",
+    synopsis: data.get("synopsis") || "",
+  };
 }
 
 function wireReviewControls(selected) {
@@ -1880,6 +1908,7 @@ function wireReviewControls(selected) {
   document.querySelector("[data-favorite]")?.addEventListener("click", () => toggleFavorite(selected.id));
   document.querySelector("[data-edit-book]")?.addEventListener("click", () => {
     bookFormMode = "edit";
+    bookFormDraft = null;
     renderBooks();
   });
 }
@@ -2193,6 +2222,7 @@ async function saveMeeting(event) {
 
 async function saveBook(event) {
   event.preventDefault();
+  captureBookFormDraft();
   const data = new FormData(event.currentTarget);
   const title = data.get("title").trim();
   const author = data.get("author").trim();
@@ -2259,7 +2289,6 @@ async function saveBook(event) {
       push: false,
     });
   }
-  bookFormMode = null;
   const savedBook = bookById(selectedBookId);
   const savedOnline = await saveBookRecord(savedBook);
   if (!savedOnline) {
@@ -2267,11 +2296,10 @@ async function saveBook(event) {
     renderBooks();
     return;
   }
+  bookFormMode = null;
+  bookFormDraft = null;
   if (bookPushPayload) {
     sendClubPush(bookPushPayload.title, bookPushPayload.message, bookPushPayload.type);
-  }
-  if (!savedOnline) {
-    notify("Livro salvo neste aparelho. A sincronização online ainda está tentando concluir.");
   }
   renderBooks();
 }
