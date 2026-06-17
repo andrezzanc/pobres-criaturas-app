@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 20;
+const APP_VERSION = 22;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -64,6 +64,9 @@ let bookFormDraft = null;
 let feedComposerOpen = false;
 let feedEditId = null;
 let feedCommentId = null;
+let reviewFormDraft = null;
+let feedFormDraft = null;
+let feedCommentDraft = null;
 let rulesEditing = false;
 let reviewFormOpen = false;
 let cloudSaveTimer = null;
@@ -332,7 +335,6 @@ async function handleCloudAuth(event) {
 async function loadCloudState() {
   const structuredLoaded = await loadStructuredClubData();
   if (structuredLoaded) {
-    await loadCloudBackupState();
     return true;
   }
 
@@ -365,7 +367,7 @@ async function refreshCloudState({ render = false } = {}) {
   cloudRefreshInFlight = true;
   const before = stableJson(state);
   const structuredLoaded = await loadStructuredClubData();
-  const backupLoaded = await loadCloudBackupState();
+  const backupLoaded = structuredLoaded ? false : await loadCloudBackupState();
 
   if (!structuredLoaded && !backupLoaded) {
     const current = await fetchCloudState();
@@ -385,7 +387,11 @@ async function refreshCloudState({ render = false } = {}) {
 
   const changed = before !== stableJson(state);
   if (changed && render && appShell && !appShell.classList.contains("hidden")) {
-    showApp();
+    if (hasActiveEditor()) {
+      captureOpenDrafts();
+    } else {
+      showApp();
+    }
   }
   return changed || structuredLoaded || backupLoaded;
 }
@@ -397,7 +403,7 @@ async function loadCloudBackupState() {
   state = mergeClubStates(state, backupState, lastCloudState);
   cloudUpdatedAt = current.updated_at;
   lastCloudState = clone(state);
-  selectedBookId = latestBook()?.id || selectedBookId || "";
+  selectedBookId = bookById(selectedBookId)?.id || latestBook()?.id || selectedBookId || "";
   persistLocalState();
   return true;
 }
@@ -507,6 +513,54 @@ async function saveRecordDirect(table, payload, serverError = "") {
       return { ok: false, error: serverError ? `${serverError}; fallback: ${error.message}` : error.message };
     }
     return { ok: true, data: data || payload };
+  } catch (error) {
+    return { ok: false, error: serverError ? `${serverError}; fallback: ${error.message}` : error.message };
+  }
+}
+
+async function deleteRecordOnServer(table, filter) {
+  let serverError = "";
+  try {
+    const token = await accessToken();
+    if (!token) return deleteRecordDirect(table, filter, "sessao ausente");
+    const response = await fetch("./api/delete-record", {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ table, filter }),
+    });
+    let body = null;
+    try {
+      body = await response.json();
+    } catch {
+      body = { error: await response.text() };
+    }
+    if (!response.ok || !body?.ok) {
+      serverError = body?.error || "servidor nao confirmou a exclusao";
+      return deleteRecordDirect(table, filter, serverError);
+    }
+    return { ok: true };
+  } catch (error) {
+    serverError = error.message || "servidor de exclusao indisponivel";
+    return deleteRecordDirect(table, filter, serverError);
+  }
+}
+
+async function deleteRecordDirect(table, filter, serverError = "") {
+  if (!clubDb || !TABLE_CONFLICTS[table]) return { ok: false, error: serverError || "Supabase indisponivel" };
+  try {
+    let query = clubDb.from(table).delete();
+    Object.entries(filter || {}).forEach(([key, value]) => {
+      query = query.eq(key, value);
+    });
+    const { error } = await query;
+    if (error) {
+      return { ok: false, error: serverError ? `${serverError}; fallback: ${error.message}` : error.message };
+    }
+    return { ok: true };
   } catch (error) {
     return { ok: false, error: serverError ? `${serverError}; fallback: ${error.message}` : error.message };
   }
@@ -793,11 +847,13 @@ async function loadReviewRecords() {
     return false;
   }
   const data = result.data.slice().sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0));
-  if (!data?.length) return false;
+  const officialReviews = {};
+  state.books.forEach((book) => {
+    officialReviews[book.id] = [];
+  });
   (data || []).forEach((row) => {
-    state.reviews[row.book_id] ||= [];
-    state.reviews[row.book_id] = state.reviews[row.book_id].filter((item) => item.participantId !== row.participant_id);
-    state.reviews[row.book_id].push({
+    officialReviews[row.book_id] ||= [];
+    officialReviews[row.book_id].push({
       participantId: row.participant_id,
       rating: Number(row.rating || 0),
       threeWords: row.three_words || "",
@@ -805,6 +861,7 @@ async function loadReviewRecords() {
       comment: row.deep_review || "",
     });
   });
+  state.reviews = officialReviews;
   return true;
 }
 
@@ -882,21 +939,24 @@ async function loadFeedRecords() {
     return false;
   }
   const data = result.data.slice().sort((a, b) => Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0));
-  if (!data?.length) return false;
-  const officialFeed = (data || []).map((row) => ({
-    id: row.id,
-    participantId: row.participant_id,
-    date: row.date || new Date(row.created_at).toLocaleDateString("pt-BR"),
-    type: row.type || "",
-    bookId: row.book_id || "",
-    text: row.text || "",
-    progress: Number(row.progress || 0),
-    likes: Array.isArray(row.liked_by) ? row.liked_by.length : 0,
-    likedBy: Array.isArray(row.liked_by) ? row.liked_by : [],
-    comments: Array.isArray(row.comments) ? row.comments : [],
-    editedAt: row.edited_at || "",
-  }));
-  state.feed = mergeById(officialFeed, state.feed, lastCloudState?.feed).sort(sortNewestFirst);
+  const officialFeed = (data || []).map((row) => {
+    const readDate = inputDateFromDisplay(row.date || row.created_at) || todayInputDate();
+    return {
+      id: row.id,
+      participantId: row.participant_id,
+      date: displayReadDate(readDate),
+      readDate,
+      type: row.type || "",
+      bookId: row.book_id || "",
+      text: row.text || "",
+      progress: Number(row.progress || 0),
+      likes: Array.isArray(row.liked_by) ? row.liked_by.length : 0,
+      likedBy: Array.isArray(row.liked_by) ? row.liked_by : [],
+      comments: Array.isArray(row.comments) ? row.comments : [],
+      editedAt: row.edited_at || "",
+    };
+  });
+  state.feed = officialFeed.sort(sortNewestFirst);
   return true;
 }
 
@@ -906,7 +966,7 @@ async function saveFeedRecord(item) {
     id: item.id,
     participant_id: item.participantId,
     book_id: item.bookId,
-    date: item.date || new Date().toLocaleDateString("pt-BR"),
+    date: displayReadDate(item.readDate || item.date) || new Date().toLocaleDateString("pt-BR"),
     type: item.type || "",
     text: item.text || "",
     progress: Number(item.progress || 0),
@@ -1721,7 +1781,7 @@ function renderPassport() {
 }
 
 function renderBooks() {
-  if (bookFormMode) captureBookFormDraft();
+  captureOpenDrafts();
   const selected = bookById(selectedBookId) || latestBook();
   if (selected) selectedBookId = selected.id;
   viewRoot.innerHTML = `
@@ -1737,9 +1797,7 @@ function renderBooks() {
     </section>
 
     ${state.books.length ? `
-      <section class="month-strip" aria-label="Meses">
-        ${sortedBooks().map((book) => `<button class="month-button ${book.id === selected?.id ? "active" : ""}" data-book="${book.id}">${escapeHtml(book.month)} ${book.year}</button>`).join("")}
-      </section>
+      ${bookYearGroupsHtml(selected?.id)}
       ${selected ? bookReviewArea(selected) : ""}
     ` : emptyBooksPanel()}
   `;
@@ -1765,6 +1823,7 @@ function renderBooks() {
         bookFormDraft = null;
       }
       reviewFormOpen = false;
+      reviewFormDraft = null;
       renderBooks();
     });
   });
@@ -1806,7 +1865,10 @@ function reviewSummaryHtml(book, ownReview) {
           <p class="eyebrow">Minha avaliação</p>
           <h3>${ownReview ? "Sua avaliação salva" : "Você ainda não avaliou"}</h3>
         </div>
-        <button class="save-button" type="button" data-open-review-form>${ownReview ? "Editar avaliação" : "Criar avaliação"}</button>
+        <div class="button-row">
+          <button class="save-button" type="button" data-open-review-form>${ownReview ? "Editar avaliação" : "Criar avaliação"}</button>
+          ${ownReview ? `<button class="ghost-button danger-button" type="button" data-delete-review>Excluir avaliação</button>` : ""}
+        </div>
       </div>
       ${ownReview ? `
         <div class="review-summary">
@@ -1821,6 +1883,8 @@ function reviewSummaryHtml(book, ownReview) {
 }
 
 function reviewFormHtml(book, ownReview) {
+  const draft = reviewFormDraft && reviewFormDraft.bookId === book.id ? reviewFormDraft : {};
+  const field = (name, fallback = "") => draft[name] ?? fallback ?? "";
   return `
     <article class="panel my-review">
       <div class="section-heading">
@@ -1830,17 +1894,18 @@ function reviewFormHtml(book, ownReview) {
         </div>
       </div>
       <form id="review-form" class="review-form">
+        <input type="hidden" name="bookId" value="${escapeAttr(book.id)}" />
         <label>
           <span>Estrelas</span>
-          <input id="review-rating" name="rating" type="text" inputmode="decimal" placeholder="Ex.: 0,2 | 2,5 | 3,8" value="${escapeAttr(ownReview ? formatRatingInput(ownReview.rating) : "")}" />
+          <input id="review-rating" name="rating" type="text" inputmode="decimal" placeholder="Ex.: 0,2 | 2,5 | 3,8" value="${escapeAttr(field("rating", ownReview ? formatRatingInput(ownReview.rating) : ""))}" />
         </label>
         <label>
           <span>3 palavras para descrever o livro</span>
-          <input name="threeWords" maxlength="80" placeholder="Ex.: tenso, rápido, surpreendente" value="${escapeAttr(ownReview?.threeWords || "")}" />
+          <input name="threeWords" maxlength="80" placeholder="Ex.: tenso, rápido, surpreendente" value="${escapeAttr(field("threeWords", ownReview?.threeWords || ""))}" />
         </label>
         <label>
           <span>Resenha mais profunda</span>
-          <textarea name="deepReview" placeholder="Escreva sua opinião com mais calma aqui.">${escapeHtml(ownReview?.deepReview || ownReview?.comment || "")}</textarea>
+          <textarea name="deepReview" placeholder="Escreva sua opinião com mais calma aqui.">${escapeHtml(field("deepReview", ownReview?.deepReview || ownReview?.comment || ""))}</textarea>
         </label>
         <div class="button-row">
           <button class="save-button" type="submit">Salvar avaliação</button>
@@ -1892,19 +1957,81 @@ function captureBookFormDraft() {
   };
 }
 
+function captureReviewFormDraft() {
+  const form = document.querySelector("#review-form");
+  if (!form) return;
+  const data = new FormData(form);
+  reviewFormDraft = {
+    bookId: data.get("bookId") || selectedBookId || "",
+    rating: data.get("rating") || "",
+    threeWords: data.get("threeWords") || "",
+    deepReview: data.get("deepReview") || "",
+  };
+}
+
+function captureFeedFormDraft() {
+  const form = document.querySelector("#feed-form");
+  if (!form) return;
+  const data = new FormData(form);
+  feedFormDraft = {
+    feedId: data.get("feedId") || "",
+    bookId: data.get("bookId") || "",
+    type: data.get("type") || "",
+    progress: data.get("progress") || "",
+    readDate: data.get("readDate") || "",
+    text: data.get("text") || "",
+  };
+}
+
+function captureFeedCommentDraft() {
+  const form = document.querySelector("[data-feed-comment-form]");
+  if (!form) return;
+  const data = new FormData(form);
+  feedCommentDraft = {
+    feedId: data.get("feedId") || "",
+    comment: data.get("comment") || "",
+  };
+}
+
+function captureOpenDrafts() {
+  if (bookFormMode) captureBookFormDraft();
+  if (reviewFormOpen) captureReviewFormDraft();
+  if (feedComposerOpen || feedEditId) captureFeedFormDraft();
+  if (feedCommentId) captureFeedCommentDraft();
+}
+
+function hasActiveEditor() {
+  return Boolean(
+    document.querySelector("#book-form") ||
+    document.querySelector("#review-form") ||
+    document.querySelector("#feed-form") ||
+    document.querySelector("[data-feed-comment-form]") ||
+    document.querySelector("#meeting-form") ||
+    document.querySelector("#profile-form") ||
+    document.querySelector("#rules-form")
+  );
+}
+
 function wireReviewControls(selected) {
   if (!selected) return;
   document.querySelectorAll("[data-open-review-form]").forEach((button) => {
     button.addEventListener("click", () => {
       reviewFormOpen = true;
+      reviewFormDraft = null;
       renderBooks();
     });
   });
   document.querySelector("[data-cancel-review]")?.addEventListener("click", () => {
     reviewFormOpen = false;
+    reviewFormDraft = null;
     renderBooks();
   });
   document.querySelector("#review-form")?.addEventListener("submit", (event) => saveReview(event, selected.id));
+  document.querySelector("#review-form")?.addEventListener("input", captureReviewFormDraft);
+  document.querySelector("#review-form")?.addEventListener("change", captureReviewFormDraft);
+  document.querySelectorAll("[data-delete-review]").forEach((button) => {
+    button.addEventListener("click", () => deleteReview(selected.id));
+  });
   document.querySelector("[data-favorite]")?.addEventListener("click", () => toggleFavorite(selected.id));
   document.querySelector("[data-edit-book]")?.addEventListener("click", () => {
     bookFormMode = "edit";
@@ -1914,6 +2041,7 @@ function wireReviewControls(selected) {
 }
 
 function renderFeed() {
+  captureOpenDrafts();
   const participant = currentParticipant();
   const currentBook = currentReadingBook(participant) || latestBook();
   const editingFeed = state.feed.find((item) => item.id === feedEditId && item.participantId === participant.id);
@@ -1935,21 +2063,30 @@ function renderFeed() {
   `;
   document.querySelector("[data-open-feed-form]")?.addEventListener("click", () => {
     feedComposerOpen = true;
+    feedFormDraft = null;
     renderFeed();
   });
   document.querySelector("[data-cancel-feed-form]")?.addEventListener("click", () => {
     feedComposerOpen = false;
     feedEditId = null;
+    feedFormDraft = null;
     renderFeed();
   });
   document.querySelector("#feed-form")?.addEventListener("submit", saveFeed);
+  document.querySelector("#feed-form")?.addEventListener("input", captureFeedFormDraft);
+  document.querySelector("#feed-form")?.addEventListener("change", captureFeedFormDraft);
   document.querySelectorAll("[data-edit-feed]").forEach((button) => {
     button.addEventListener("click", () => {
       feedEditId = button.dataset.editFeed;
       feedComposerOpen = false;
       feedCommentId = null;
+      feedFormDraft = null;
+      feedCommentDraft = null;
       renderFeed();
     });
+  });
+  document.querySelectorAll("[data-delete-feed]").forEach((button) => {
+    button.addEventListener("click", () => deleteFeedItem(button.dataset.deleteFeed));
   });
   document.querySelectorAll("[data-like-feed]").forEach((button) => {
     button.addEventListener("click", () => toggleFeedLike(button.dataset.likeFeed));
@@ -1959,28 +2096,38 @@ function renderFeed() {
       feedCommentId = feedCommentId === button.dataset.commentFeed ? null : button.dataset.commentFeed;
       feedEditId = null;
       feedComposerOpen = false;
+      feedCommentDraft = null;
       renderFeed();
     });
   });
   document.querySelectorAll("[data-cancel-feed-comment]").forEach((button) => {
     button.addEventListener("click", () => {
       feedCommentId = null;
+      feedCommentDraft = null;
       renderFeed();
     });
   });
   document.querySelectorAll("[data-feed-comment-form]").forEach((form) => {
     form.addEventListener("submit", saveFeedComment);
+    form.addEventListener("input", captureFeedCommentDraft);
+    form.addEventListener("change", captureFeedCommentDraft);
+  });
+  document.querySelectorAll("[data-delete-feed-comment]").forEach((button) => {
+    button.addEventListener("click", () => deleteFeedComment(button.dataset.feedId, button.dataset.commentId));
   });
 }
 
 function feedFormHtml(item, currentBook, participant) {
-  const selectedBookIdForForm = item?.bookId || currentBook?.id;
-  const selectedType = item?.type || "Começou a ler";
-  const progress = item?.progress ?? state.progress[participant.id]?.[selectedBookIdForForm] ?? 0;
+  const draft = feedFormDraft && (feedFormDraft.feedId || "") === (item?.id || "") ? feedFormDraft : {};
+  const field = (name, fallback = "") => draft[name] ?? fallback ?? "";
+  const selectedBookIdForForm = field("bookId", item?.bookId || currentBook?.id);
+  const selectedType = field("type", item?.type || "Começou a ler");
+  const progress = field("progress", item?.progress ?? state.progress[participant.id]?.[selectedBookIdForForm] ?? 0);
+  const readDate = field("readDate", item?.readDate || inputDateFromDisplay(item?.date) || todayInputDate());
   const options = ["Começou a ler", "Atualizou progresso", "Marcou como lido", "Fez um histórico de leitura"];
   return `
     <form id="feed-form" class="feed-form">
-      <input type="hidden" name="feedId" value="${escapeAttr(item?.id || "")}" />
+      <input type="hidden" name="feedId" value="${escapeAttr(field("feedId", item?.id || ""))}" />
       <label><span>Livro</span>${bookSelect(selectedBookIdForForm)}</label>
       <label><span>Status</span>
         <select name="type">
@@ -1988,8 +2135,9 @@ function feedFormHtml(item, currentBook, participant) {
         </select>
       </label>
       <label><span>Progresso</span><input name="progress" type="number" min="0" max="100" value="${progress}" /></label>
+      <label><span>Data da leitura</span><input name="readDate" type="date" value="${escapeAttr(readDate)}" /></label>
       <button class="save-button" type="submit">${item ? "Salvar histórico" : "Publicar"}</button>
-      <label style="grid-column: 1 / -1"><span>Comentário</span><textarea name="text" placeholder="Ex.: capítulo 12 e já desconfio de todo mundo">${escapeHtml(item?.text || "")}</textarea></label>
+      <label style="grid-column: 1 / -1"><span>Comentário</span><textarea name="text" placeholder="Ex.: capítulo 12 e já desconfio de todo mundo">${escapeHtml(field("text", item?.text || ""))}</textarea></label>
       <button class="ghost-button" type="button" data-cancel-feed-form>Cancelar</button>
     </form>
   `;
@@ -2107,6 +2255,8 @@ function renderStats() {
   const recommender = bestRecommender();
   const lowRecommender = worstRecommender();
   const genreRows = genreStats();
+  const readYearRows = readYearStats();
+  const maxReadYearCount = Math.max(1, ...readYearRows.map((row) => row.count));
   viewRoot.innerHTML = `
     <section class="stats-grid">
       ${statCard("Maior nota do ano", bestYear?.title || "A definir", bestYear ? averageFor(bestYear.id).toFixed(1) : "0.0")}
@@ -2116,8 +2266,25 @@ function renderStats() {
       ${statCard("Indica melhores livros", recommender?.name || "A definir", recommender ? recommender.score.toFixed(1) : "0.0")}
       ${statCard("Indica os piores", lowRecommender?.name || "A definir", lowRecommender ? lowRecommender.score.toFixed(1) : "0.0")}
       ${statCard("Comentários registrados", String(totalReviews()), "avaliações")}
-      ${statCard("Livros lidos no ano", String(totalReadCurrentYear()), String(new Date().getFullYear()))}
-      ${statCard("Livros lidos no clube", String(totalReadInClub()), "declarados pelas integrantes")}
+      ${statCard("Livros lidos no ano", String(totalReadCurrentYear()), `${new Date().getFullYear()} pela data da leitura`)}
+      ${statCard("Livros lidos no clube", String(totalReadInClub()), "leituras concluídas registradas")}
+    </section>
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Linha do tempo</p>
+          <h3>Livros lidos por ano</h3>
+        </div>
+      </div>
+      <div class="chart-bars">
+        ${readYearRows.length ? readYearRows.map((row) => `
+          <div class="bar-row">
+            <strong>${row.year}</strong>
+            <div class="bar"><span style="--value: ${(row.count / maxReadYearCount) * 100}%"></span></div>
+            <span>${row.count}</span>
+          </div>
+        `).join("") : `<p class="muted">Quando um histórico for marcado como lido com data, ele aparece no ano correto aqui.</p>`}
+      </div>
     </section>
     <section class="panel">
       <div class="section-heading">
@@ -2306,6 +2473,7 @@ async function saveBook(event) {
 
 async function saveReview(event, bookId) {
   event.preventDefault();
+  captureReviewFormDraft();
   const participant = currentParticipant();
   const data = new FormData(event.currentTarget);
   const rating = parseRating(data.get("rating"));
@@ -2332,6 +2500,7 @@ async function saveReview(event, bookId) {
     return;
   }
   reviewFormOpen = false;
+  reviewFormDraft = null;
   notify("Avaliação salva com estrelas e comentário.");
   createNotification({
     type: "review",
@@ -2339,6 +2508,30 @@ async function saveReview(event, bookId) {
     message: `${participant.name} avaliou ${bookById(bookId)?.title || "um livro"} com ${formatRating(rating)} estrelas.`,
     push: true,
   });
+  renderBooks();
+}
+
+async function deleteReview(bookId) {
+  const participant = currentParticipant();
+  const current = myReview(bookId);
+  if (!participant || !current) return;
+  if (!window.confirm("Excluir sua avaliação deste livro?")) return;
+  const previous = [...(state.reviews[bookId] || [])];
+  state.reviews[bookId] = previous.filter((review) => review.participantId !== participant.id);
+  const deleted = clubDb
+    ? await deleteRecordOnServer("club_reviews", { book_id: bookId, participant_id: participant.id })
+    : { ok: true };
+  if (!deleted.ok) {
+    state.reviews[bookId] = previous;
+    notify("Nao consegui excluir a avaliacao na nuvem. Tente novamente.");
+    renderBooks();
+    return;
+  }
+  persistLocalState();
+  await saveCloudSnapshot();
+  reviewFormOpen = false;
+  reviewFormDraft = null;
+  notify("Avaliação excluída.");
   renderBooks();
 }
 
@@ -2362,6 +2555,7 @@ async function toggleFavorite(bookId) {
 
 async function saveFeed(event) {
   event.preventDefault();
+  captureFeedFormDraft();
   const data = new FormData(event.currentTarget);
   const participant = currentParticipant();
   const feedId = data.get("feedId");
@@ -2369,25 +2563,29 @@ async function saveFeed(event) {
   const progress = Math.max(0, Math.min(100, Number(data.get("progress") || 0)));
   const type = data.get("type");
   const text = data.get("text");
+  const readDate = data.get("readDate") || todayInputDate();
   state.progress[participant.id] ||= {};
   state.progress[participant.id][bookId] = progress;
   participant.currentBookId = bookId;
-  syncCompletedBook(participant, bookId, type, progress);
 
   const existing = feedId ? state.feed.find((item) => item.id === feedId && item.participantId === participant.id) : null;
+  const previousReadDate = existing?.readDate || inputDateFromDisplay(existing?.date);
   let savedFeedItem;
   if (existing) {
     existing.type = type;
     existing.bookId = bookId;
     existing.text = text;
     existing.progress = progress;
+    existing.readDate = readDate;
+    existing.date = displayReadDate(readDate);
     existing.editedAt = new Date().toLocaleDateString("pt-BR");
     savedFeedItem = existing;
   } else {
     savedFeedItem = {
       id: `f${Date.now()}`,
       participantId: participant.id,
-      date: new Date().toLocaleDateString("pt-BR"),
+      date: displayReadDate(readDate),
+      readDate,
       type,
       bookId,
       text,
@@ -2398,6 +2596,7 @@ async function saveFeed(event) {
     };
     state.feed.unshift(savedFeedItem);
   }
+  syncCompletedBook(participant, bookId, type, progress, readDate, previousReadDate);
   const savedLibrary = await saveMemberLibraryRecord(participant);
   const savedFeed = await saveFeedRecord(savedFeedItem);
   let savedProfile = true;
@@ -2422,17 +2621,62 @@ async function saveFeed(event) {
   });
   feedComposerOpen = false;
   feedEditId = null;
+  feedFormDraft = null;
   renderFeed();
 }
 
-function syncCompletedBook(participant, bookId, type, progress) {
+async function deleteFeedItem(feedId) {
+  const participant = currentParticipant();
+  const item = state.feed.find((feedItem) => feedItem.id === feedId && feedItem.participantId === participant.id);
+  if (!item) return;
+  if (!window.confirm("Excluir este histórico do feed?")) return;
+  const previous = [...state.feed];
+  state.feed = state.feed.filter((feedItem) => feedItem.id !== feedId);
+  const deleted = clubDb
+    ? await deleteRecordOnServer("club_feed", { id: feedId, participant_id: participant.id })
+    : { ok: true };
+  if (!deleted.ok) {
+    state.feed = previous;
+    notify("Nao consegui excluir o historico na nuvem. Tente novamente.");
+    renderFeed();
+    return;
+  }
+  persistLocalState();
+  await saveCloudSnapshot();
+  feedComposerOpen = false;
+  feedEditId = null;
+  feedFormDraft = null;
+  notify("Histórico excluído.");
+  renderFeed();
+}
+
+function syncCompletedBook(participant, bookId, type, progress, readDate = todayInputDate(), previousReadDate = "") {
   const completed = type === "Marcou como lido" || Number(progress) >= 100;
   if (!completed || !bookId) return;
   participant.completedBookIds ||= [];
-  if (participant.completedBookIds.includes(bookId)) return;
-  participant.completedBookIds.push(bookId);
-  participant.booksReadClub = Number(participant.booksReadClub || 0) + 1;
-  participant.booksReadYear = Number(participant.booksReadYear || 0) + 1;
+  state.progress[participant.id] ||= {};
+  const completedDates = state.progress[participant.id].__completedDates || {};
+  state.progress[participant.id].__completedDates = completedDates;
+  const wasCompleted = participant.completedBookIds.includes(bookId);
+  const previousYear = readYear(previousReadDate || completedDates[bookId]);
+  const nextYear = readYear(readDate);
+  const currentYear = new Date().getFullYear();
+
+  if (!wasCompleted) {
+    participant.completedBookIds.push(bookId);
+    participant.booksReadClub = Number(participant.booksReadClub || 0) + 1;
+    if (nextYear === currentYear) {
+      participant.booksReadYear = Number(participant.booksReadYear || 0) + 1;
+    }
+  } else if (previousYear && previousYear !== nextYear) {
+    if (previousYear === currentYear) {
+      participant.booksReadYear = Math.max(0, Number(participant.booksReadYear || 0) - 1);
+    }
+    if (nextYear === currentYear) {
+      participant.booksReadYear = Number(participant.booksReadYear || 0) + 1;
+    }
+  }
+  completedDates[bookId] = readDate || todayInputDate();
 }
 
 async function toggleFeedLike(feedId) {
@@ -2457,6 +2701,7 @@ async function toggleFeedLike(feedId) {
 
 async function saveFeedComment(event) {
   event.preventDefault();
+  captureFeedCommentDraft();
   const participant = currentParticipant();
   const data = new FormData(event.currentTarget);
   const feedId = data.get("feedId");
@@ -2468,20 +2713,45 @@ async function saveFeedComment(event) {
     return;
   }
   item.comments ||= [];
-  item.comments.push({
+  const comment = {
     id: `c${Date.now()}`,
     participantId: participant.id,
     text,
     date: new Date().toLocaleDateString("pt-BR"),
-  });
-  feedCommentId = null;
+  };
+  item.comments.push(comment);
   const savedOnline = await saveFeedRecord(item);
   if (!savedOnline) {
+    item.comments = item.comments.filter((entry) => entry.id !== comment.id);
     notify("Nao consegui salvar o comentario na nuvem. Tente novamente.");
     renderFeed();
     return;
   }
+  feedCommentId = null;
+  feedCommentDraft = null;
   notify("Comentário publicado.");
+  renderFeed();
+}
+
+async function deleteFeedComment(feedId, commentId) {
+  const participant = currentParticipant();
+  const item = state.feed.find((feedItem) => feedItem.id === feedId);
+  if (!item || !participant) return;
+  const previousComments = [...(item.comments || [])];
+  const comment = previousComments.find((entry) => entry.id === commentId && entry.participantId === participant.id);
+  if (!comment) return;
+  if (!window.confirm("Excluir este comentário?")) return;
+  item.comments = previousComments.filter((entry) => entry.id !== commentId);
+  const savedOnline = await saveFeedRecord(item);
+  if (!savedOnline) {
+    item.comments = previousComments;
+    notify("Nao consegui excluir o comentario na nuvem. Tente novamente.");
+    renderFeed();
+    return;
+  }
+  feedCommentId = null;
+  feedCommentDraft = null;
+  notify("Comentário excluído.");
   renderFeed();
 }
 
@@ -2554,7 +2824,44 @@ async function saveProfile(event) {
 
 function bookSelect(selectedId, allowEmpty = false) {
   const empty = allowEmpty ? `<option value="">A definir</option>` : "";
-  return `<select name="bookId">${empty}${sortedBooks().map((book) => `<option value="${book.id}" ${book.id === selectedId ? "selected" : ""}>${escapeHtml(book.title)} (${escapeHtml(book.month)} ${book.year})</option>`).join("")}</select>`;
+  return `<select name="bookId">${empty}${bookOptionsByYearHtml(selectedId)}</select>`;
+}
+
+function bookOptionsByYearHtml(selectedId) {
+  return bookYearGroups()
+    .map(({ year, books }) => `
+      <optgroup label="${escapeAttr(String(year))}">
+        ${books.map((book) => `<option value="${book.id}" ${book.id === selectedId ? "selected" : ""}>${escapeHtml(book.month)} - ${escapeHtml(book.title)}</option>`).join("")}
+      </optgroup>
+    `)
+    .join("");
+}
+
+function bookYearGroupsHtml(selectedId) {
+  return `
+    <section class="book-year-list" aria-label="Livros por ano">
+      ${bookYearGroups().map(({ year, books }) => `
+        <div class="book-year-group">
+          <h4>${escapeHtml(String(year))}</h4>
+          <div class="month-strip">
+            ${books.map((book) => `<button class="month-button ${book.id === selectedId ? "active" : ""}" data-book="${book.id}">${escapeHtml(book.month)}</button>`).join("")}
+          </div>
+        </div>
+      `).join("")}
+    </section>
+  `;
+}
+
+function bookYearGroups() {
+  const groups = new Map();
+  sortedBooks().forEach((book) => {
+    const year = Number(book.year || new Date().getFullYear());
+    if (!groups.has(year)) groups.set(year, []);
+    groups.get(year).push(book);
+  });
+  return [...groups.entries()]
+    .sort((a, b) => b[0] - a[0])
+    .map(([year, books]) => ({ year, books }));
 }
 
 function participantSelect(selectedId = currentParticipant()?.id) {
@@ -2620,7 +2927,12 @@ function reviewCard(review) {
       </header>
       ${review.threeWords ? `<p class="three-words">${escapeHtml(review.threeWords)}</p>` : ""}
       <p>${escapeHtml(review.deepReview || review.comment || "Sem resenha, só o carimbo das estrelas.")}</p>
-      ${isMine ? `<button class="ghost-button" type="button" data-open-review-form>Editar minha avaliação</button>` : ""}
+      ${isMine ? `
+        <div class="button-row">
+          <button class="ghost-button" type="button" data-open-review-form>Editar minha avaliação</button>
+          <button class="ghost-button danger-button" type="button" data-delete-review>Excluir avaliação</button>
+        </div>
+      ` : ""}
     </article>
   `;
 }
@@ -2660,11 +2972,14 @@ function feedCard(item) {
         <button class="comment-button" type="button" data-comment-feed="${item.id}">
           Comentar · ${item.comments.length}
         </button>
-        ${isMine ? `<button class="ghost-button" type="button" data-edit-feed="${item.id}">Editar histórico</button>` : ""}
+        ${isMine ? `
+          <button class="ghost-button" type="button" data-edit-feed="${item.id}">Editar histórico</button>
+          <button class="ghost-button danger-button" type="button" data-delete-feed="${item.id}">Excluir histórico</button>
+        ` : ""}
       </div>
       ${item.comments.length ? `
         <div class="feed-comments">
-          ${item.comments.map(feedCommentHtml).join("")}
+          ${item.comments.map((comment) => feedCommentHtml(comment, item.id)).join("")}
         </div>
       ` : ""}
       ${feedCommentId === item.id ? `
@@ -2672,7 +2987,7 @@ function feedCard(item) {
           <input type="hidden" name="feedId" value="${escapeAttr(item.id)}" />
           <label>
             <span>Comentário</span>
-            <textarea name="comment" placeholder="Escreva sua reação a esse histórico"></textarea>
+            <textarea name="comment" placeholder="Escreva sua reação a esse histórico">${escapeHtml(feedCommentDraft?.feedId === item.id ? feedCommentDraft.comment || "" : "")}</textarea>
           </label>
           <div class="button-row">
             <button class="save-button" type="submit">Publicar comentário</button>
@@ -2684,12 +2999,14 @@ function feedCard(item) {
   `;
 }
 
-function feedCommentHtml(comment) {
+function feedCommentHtml(comment, feedId) {
+  const isMine = comment.participantId === currentParticipant().id;
   return `
     <div class="feed-comment">
       <strong>${escapeHtml(nameById(comment.participantId))}</strong>
       <span>${escapeHtml(comment.date || "")}</span>
       <p>${escapeHtml(comment.text)}</p>
+      ${isMine ? `<button class="ghost-button danger-button" type="button" data-feed-id="${escapeAttr(feedId)}" data-comment-id="${escapeAttr(comment.id)}" data-delete-feed-comment>Excluir comentário</button>` : ""}
     </div>
   `;
 }
@@ -2814,11 +3131,49 @@ function totalReviews() {
 }
 
 function totalReadCurrentYear() {
+  const datedReads = completedReadEntries();
+  if (datedReads.length) {
+    const currentYear = new Date().getFullYear();
+    return datedReads.filter((entry) => entry.year === currentYear).length;
+  }
   return state.participants.reduce((sum, participant) => sum + Number(participant.booksReadYear || 0), 0);
 }
 
 function totalReadInClub() {
+  const datedReads = completedReadEntries();
+  if (datedReads.length) return datedReads.length;
   return state.participants.reduce((sum, participant) => sum + Number(participant.booksReadClub || 0), 0);
+}
+
+function readYearStats() {
+  const map = new Map();
+  completedReadEntries().forEach((entry) => {
+    map.set(entry.year, (map.get(entry.year) || 0) + 1);
+  });
+  return [...map.entries()]
+    .map(([year, count]) => ({ year, count }))
+    .sort((a, b) => b.year - a.year);
+}
+
+function completedReadEntries() {
+  const map = new Map();
+  state.feed.forEach((item) => {
+    if (!isCompletedFeedItem(item) || !item.participantId || !item.bookId) return;
+    const year = readYear(item.readDate || item.date);
+    if (!year) return;
+    const key = `${item.participantId}:${item.bookId}`;
+    map.set(key, {
+      participantId: item.participantId,
+      bookId: item.bookId,
+      year,
+      readDate: inputDateFromDisplay(item.readDate || item.date),
+    });
+  });
+  return [...map.values()];
+}
+
+function isCompletedFeedItem(item) {
+  return item?.type === "Marcou como lido" || Number(item?.progress || 0) >= 100;
 }
 
 function latestBook() {
@@ -2925,6 +3280,40 @@ function formatRatingInput(value) {
 
 function formatDate(value) {
   return new Date(`${value}T12:00:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
+}
+
+function todayInputDate() {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function inputDateFromDisplay(value) {
+  if (!value) return "";
+  const text = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const br = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (br) return `${br[3]}-${br[2].padStart(2, "0")}-${br[1].padStart(2, "0")}`;
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function displayReadDate(value) {
+  const input = inputDateFromDisplay(value);
+  if (!input) return "";
+  const [year, month, day] = input.split("-");
+  return `${day}/${month}/${year}`;
+}
+
+function readYear(value) {
+  const input = inputDateFromDisplay(value);
+  return input ? Number(input.slice(0, 4)) : 0;
 }
 
 function formatRules(value) {
