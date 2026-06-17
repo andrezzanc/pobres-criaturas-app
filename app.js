@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 22;
+const APP_VERSION = 23;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -2838,15 +2838,24 @@ function bookOptionsByYearHtml(selectedId) {
 }
 
 function bookYearGroupsHtml(selectedId) {
+  const selectedYear = Number(bookById(selectedId)?.year || bookYearGroups()[0]?.year || 0);
   return `
     <section class="book-year-list" aria-label="Livros por ano">
       ${bookYearGroups().map(({ year, books }) => `
-        <div class="book-year-group">
-          <h4>${escapeHtml(String(year))}</h4>
-          <div class="month-strip">
-            ${books.map((book) => `<button class="month-button ${book.id === selectedId ? "active" : ""}" data-book="${book.id}">${escapeHtml(book.month)}</button>`).join("")}
+        <details class="book-year-group" ${Number(year) === selectedYear ? "open" : ""}>
+          <summary>
+            <span>${escapeHtml(String(year))}</span>
+            <small>${books.length} livro${books.length === 1 ? "" : "s"}</small>
+          </summary>
+          <div class="book-month-options">
+            ${books.map((book) => `
+              <button class="month-button book-month-button ${book.id === selectedId ? "active" : ""}" data-book="${book.id}">
+                <span>${escapeHtml(book.month)}</span>
+                <small>${escapeHtml(book.title)}</small>
+              </button>
+            `).join("")}
           </div>
-        </div>
+        </details>
       `).join("")}
     </section>
   `;

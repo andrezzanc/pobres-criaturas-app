@@ -846,9 +846,97 @@ select:focus {
   padding-bottom: 4px;
 }
 
-.month-button {
-  flex: 0 0 auto;
+.book-year-list {
+  display: grid;
+  gap: 10px;
+  max-width: 100%;
+}
+
+.book-year-group {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 247, 232, 0.7);
+  overflow: hidden;
+}
+
+.book-year-group summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  list-style: none;
   font-weight: 900;
+}
+
+.book-year-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.book-year-group summary::after {
+  content: "+";
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.book-year-group[open] summary::after {
+  content: "-";
+}
+
+.book-year-group summary span {
+  margin: 0;
+  color: var(--soft-ink);
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.book-year-group summary small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  margin-left: auto;
+}
+
+.book-month-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+  padding: 0 12px 12px;
+  max-width: 100%;
+}
+
+.month-button {
+  font-weight: 900;
+}
+
+.book-month-button {
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  gap: 3px;
+  align-content: center;
+  text-align: left;
+  white-space: normal;
+}
+
+.book-month-button small {
+  color: currentColor;
+  opacity: 0.78;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.danger-button {
+  color: var(--rose);
+  border-color: rgba(177, 48, 81, 0.35);
 }
 
 .review-layout {
