@@ -233,6 +233,37 @@ select:focus {
   box-shadow: 0 12px 22px rgba(143, 63, 32, 0.22);
 }
 
+.primary-button:disabled,
+.save-button:disabled,
+.secondary-button:disabled,
+.ghost-button:disabled {
+  opacity: 0.68;
+  cursor: wait;
+}
+
+.is-saving {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.is-saving::after {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 760ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .secondary-button {
   font-weight: 800;
 }
@@ -1350,7 +1381,7 @@ select:focus {
     bottom: 0;
     z-index: 10;
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(7, minmax(0, 1fr));
     gap: 6px;
     padding: 8px;
     border-top: 1px solid var(--line);
@@ -1367,10 +1398,25 @@ select:focus {
     padding: 7px 4px;
     font-size: 12px;
     font-weight: 900;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
 
 @media (max-width: 620px) {
+  .content-shell {
+    padding-bottom: 148px;
+  }
+
+  .bottom-nav {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .bottom-nav .nav-item {
+    min-height: 44px;
+  }
+
   .passport-title,
   .passport-meta,
   .stats-grid,

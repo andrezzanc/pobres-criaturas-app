@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 23;
+const APP_VERSION = 24;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -179,6 +179,53 @@ installButton.addEventListener("click", async () => {
   }
   notify(installHelpText());
 });
+
+function submitWithLoading(handler, loadingText = "Salvando...") {
+  return async (event) => {
+    const form = event.currentTarget;
+    if (!startFormLoading(form, loadingText)) {
+      event.preventDefault();
+      return;
+    }
+    try {
+      await handler(event);
+    } finally {
+      stopFormLoading(form);
+    }
+  };
+}
+
+function startFormLoading(form, loadingText) {
+  if (!form || form.dataset.saving === "true") return false;
+  form.dataset.saving = "true";
+  const buttons = [...form.querySelectorAll("button")];
+  buttons.forEach((button) => {
+    button.dataset.wasDisabled = button.disabled ? "true" : "false";
+    button.disabled = true;
+  });
+  const submitButton = form.querySelector('button[type="submit"]') || buttons[0];
+  if (submitButton) {
+    submitButton.dataset.originalText = submitButton.textContent;
+    submitButton.textContent = loadingText;
+    submitButton.classList.add("is-saving");
+  }
+  return true;
+}
+
+function stopFormLoading(form) {
+  if (!form) return;
+  const submitButton = form.querySelector("[data-original-text]");
+  if (submitButton) {
+    submitButton.textContent = submitButton.dataset.originalText;
+    delete submitButton.dataset.originalText;
+    submitButton.classList.remove("is-saving");
+  }
+  form.querySelectorAll("button").forEach((button) => {
+    button.disabled = button.dataset.wasDisabled === "true";
+    delete button.dataset.wasDisabled;
+  });
+  delete form.dataset.saving;
+}
 
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", () => {
@@ -1710,7 +1757,7 @@ function renderHome() {
     meetingEditing = true;
     renderHome();
   });
-  document.querySelector("#meeting-form")?.addEventListener("submit", saveMeeting);
+  document.querySelector("#meeting-form")?.addEventListener("submit", submitWithLoading(saveMeeting, "Salvando reuniÃ£o..."));
   document.querySelector("[data-cancel-meeting]")?.addEventListener("click", () => {
     meetingEditing = false;
     renderHome();
@@ -1807,7 +1854,7 @@ function renderBooks() {
     bookFormDraft = null;
     renderBooks();
   });
-  document.querySelector("#book-form")?.addEventListener("submit", saveBook);
+  document.querySelector("#book-form")?.addEventListener("submit", submitWithLoading(saveBook, "Salvando livro..."));
   document.querySelector("#book-form")?.addEventListener("input", captureBookFormDraft);
   document.querySelector("#book-form")?.addEventListener("change", captureBookFormDraft);
   document.querySelector("[data-cancel-book-form]")?.addEventListener("click", () => {
@@ -2026,7 +2073,7 @@ function wireReviewControls(selected) {
     reviewFormDraft = null;
     renderBooks();
   });
-  document.querySelector("#review-form")?.addEventListener("submit", (event) => saveReview(event, selected.id));
+  document.querySelector("#review-form")?.addEventListener("submit", submitWithLoading((event) => saveReview(event, selected.id), "Salvando avaliaÃ§Ã£o..."));
   document.querySelector("#review-form")?.addEventListener("input", captureReviewFormDraft);
   document.querySelector("#review-form")?.addEventListener("change", captureReviewFormDraft);
   document.querySelectorAll("[data-delete-review]").forEach((button) => {
@@ -2072,7 +2119,7 @@ function renderFeed() {
     feedFormDraft = null;
     renderFeed();
   });
-  document.querySelector("#feed-form")?.addEventListener("submit", saveFeed);
+  document.querySelector("#feed-form")?.addEventListener("submit", submitWithLoading(saveFeed, feedEditId ? "Salvando histÃ³rico..." : "Publicando..."));
   document.querySelector("#feed-form")?.addEventListener("input", captureFeedFormDraft);
   document.querySelector("#feed-form")?.addEventListener("change", captureFeedFormDraft);
   document.querySelectorAll("[data-edit-feed]").forEach((button) => {
@@ -2108,7 +2155,7 @@ function renderFeed() {
     });
   });
   document.querySelectorAll("[data-feed-comment-form]").forEach((form) => {
-    form.addEventListener("submit", saveFeedComment);
+    form.addEventListener("submit", submitWithLoading(saveFeedComment, "Publicando..."));
     form.addEventListener("input", captureFeedCommentDraft);
     form.addEventListener("change", captureFeedCommentDraft);
   });
@@ -2214,7 +2261,7 @@ function renderRules() {
     rulesEditing = false;
     renderRules();
   });
-  document.querySelector("#rules-form")?.addEventListener("submit", saveRules);
+  document.querySelector("#rules-form")?.addEventListener("submit", submitWithLoading(saveRules, "Salvando regras..."));
   document.querySelectorAll("[data-order-up]").forEach((button) => {
     button.addEventListener("click", () => moveOrder(button.dataset.orderUp, -1));
   });
@@ -2346,7 +2393,7 @@ function renderProfile() {
       </form>
     </section>
   `;
-  document.querySelector("#profile-form").addEventListener("submit", saveProfile);
+  document.querySelector("#profile-form").addEventListener("submit", submitWithLoading(saveProfile, "Salvando perfil..."));
 }
 
 async function saveMeeting(event) {
