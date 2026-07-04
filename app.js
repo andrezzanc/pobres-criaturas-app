@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 24;
+const APP_VERSION = 25;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -893,6 +893,7 @@ async function loadReviewRecords() {
     console.warn("Nao foi possivel carregar avaliacoes oficiais", result.error);
     return false;
   }
+  const likeBackup = await reviewLikeBackupMap();
   const data = result.data.slice().sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0));
   const officialReviews = {};
   state.books.forEach((book) => {
@@ -906,10 +907,36 @@ async function loadReviewRecords() {
       threeWords: row.three_words || "",
       deepReview: row.deep_review || "",
       comment: row.deep_review || "",
+      likedBy: likeBackup.get(reviewLikeKey(row.book_id, row.participant_id)) || [],
     });
   });
   state.reviews = officialReviews;
   return true;
+}
+
+async function reviewLikeBackupMap() {
+  const sources = [lastCloudState?.reviews, state.reviews];
+  const current = await fetchCloudState();
+  if (current?.data?.reviews) sources.push(current.data.reviews);
+  return collectReviewLikes(sources);
+}
+
+function collectReviewLikes(sources = []) {
+  const likes = new Map();
+  sources.filter(Boolean).forEach((reviewsByBook) => {
+    Object.entries(reviewsByBook || {}).forEach(([bookId, reviews]) => {
+      (reviews || []).forEach((review) => {
+        if (Array.isArray(review?.likedBy) && review.likedBy.length) {
+          likes.set(reviewLikeKey(bookId, review.participantId), [...new Set(review.likedBy)]);
+        }
+      });
+    });
+  });
+  return likes;
+}
+
+function reviewLikeKey(bookId, participantId) {
+  return `${bookId || ""}::${participantId || ""}`;
 }
 
 async function saveReviewRecord(bookId, review) {
@@ -999,12 +1026,19 @@ async function loadFeedRecords() {
       progress: Number(row.progress || 0),
       likes: Array.isArray(row.liked_by) ? row.liked_by.length : 0,
       likedBy: Array.isArray(row.liked_by) ? row.liked_by : [],
-      comments: Array.isArray(row.comments) ? row.comments : [],
+      comments: normalizeFeedComments(row.comments),
       editedAt: row.edited_at || "",
     };
   });
   state.feed = officialFeed.sort(sortNewestFirst);
   return true;
+}
+
+function normalizeFeedComments(comments = []) {
+  return (Array.isArray(comments) ? comments : []).map((comment) => ({
+    ...comment,
+    likedBy: Array.isArray(comment?.likedBy) ? comment.likedBy : [],
+  }));
 }
 
 async function saveFeedRecord(item) {
@@ -1543,7 +1577,15 @@ function withStateDefaults(value) {
   value.feed.forEach((item) => {
     item.likedBy ||= [];
     item.comments ||= [];
+    item.comments.forEach((comment) => {
+      comment.likedBy ||= [];
+    });
     item.likes = item.likedBy.length;
+  });
+  Object.values(value.reviews || {}).forEach((reviews) => {
+    (reviews || []).forEach((review) => {
+      review.likedBy ||= [];
+    });
   });
   return value;
 }
@@ -1757,7 +1799,7 @@ function renderHome() {
     meetingEditing = true;
     renderHome();
   });
-  document.querySelector("#meeting-form")?.addEventListener("submit", submitWithLoading(saveMeeting, "Salvando reuniÃ£o..."));
+  document.querySelector("#meeting-form")?.addEventListener("submit", submitWithLoading(saveMeeting, "Salvando reuni\u00e3o..."));
   document.querySelector("[data-cancel-meeting]")?.addEventListener("click", () => {
     meetingEditing = false;
     renderHome();
@@ -1899,7 +1941,7 @@ function bookReviewArea(selected) {
       ${reviewFormOpen ? reviewFormHtml(selected, ownReview) : reviewSummaryHtml(selected, ownReview)}
     </section>
     <section class="review-list">
-      ${reviewsFor(selected.id).length ? reviewsFor(selected.id).map(reviewCard).join("") : emptyPanel("Ainda sem avaliações", "Quando as integrantes salvarem estrelas, a média aparece aqui.")}
+      ${reviewsFor(selected.id).length ? reviewsFor(selected.id).map((review) => reviewCard(review, selected.id)).join("") : emptyPanel("Ainda sem avaliações", "Quando as integrantes salvarem estrelas, a média aparece aqui.")}
     </section>
   `;
 }
@@ -2073,11 +2115,14 @@ function wireReviewControls(selected) {
     reviewFormDraft = null;
     renderBooks();
   });
-  document.querySelector("#review-form")?.addEventListener("submit", submitWithLoading((event) => saveReview(event, selected.id), "Salvando avaliaÃ§Ã£o..."));
+  document.querySelector("#review-form")?.addEventListener("submit", submitWithLoading((event) => saveReview(event, selected.id), "Salvando avalia\u00e7\u00e3o..."));
   document.querySelector("#review-form")?.addEventListener("input", captureReviewFormDraft);
   document.querySelector("#review-form")?.addEventListener("change", captureReviewFormDraft);
   document.querySelectorAll("[data-delete-review]").forEach((button) => {
     button.addEventListener("click", () => deleteReview(selected.id));
+  });
+  document.querySelectorAll("[data-like-review]").forEach((button) => {
+    button.addEventListener("click", () => toggleReviewLike(button.dataset.bookId, button.dataset.participantId));
   });
   document.querySelector("[data-favorite]")?.addEventListener("click", () => toggleFavorite(selected.id));
   document.querySelector("[data-edit-book]")?.addEventListener("click", () => {
@@ -2119,7 +2164,7 @@ function renderFeed() {
     feedFormDraft = null;
     renderFeed();
   });
-  document.querySelector("#feed-form")?.addEventListener("submit", submitWithLoading(saveFeed, feedEditId ? "Salvando histÃ³rico..." : "Publicando..."));
+  document.querySelector("#feed-form")?.addEventListener("submit", submitWithLoading(saveFeed, feedEditId ? "Salvando hist\u00f3rico..." : "Publicando..."));
   document.querySelector("#feed-form")?.addEventListener("input", captureFeedFormDraft);
   document.querySelector("#feed-form")?.addEventListener("change", captureFeedFormDraft);
   document.querySelectorAll("[data-edit-feed]").forEach((button) => {
@@ -2137,6 +2182,9 @@ function renderFeed() {
   });
   document.querySelectorAll("[data-like-feed]").forEach((button) => {
     button.addEventListener("click", () => toggleFeedLike(button.dataset.likeFeed));
+  });
+  document.querySelectorAll("[data-like-feed-comment]").forEach((button) => {
+    button.addEventListener("click", () => toggleFeedCommentLike(button.dataset.feedId, button.dataset.commentId));
   });
   document.querySelectorAll("[data-comment-feed]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -2600,6 +2648,28 @@ async function toggleFavorite(bookId) {
   renderBooks();
 }
 
+async function toggleReviewLike(bookId, participantId) {
+  const current = currentParticipant();
+  const review = (state.reviews[bookId] || []).find((item) => item.participantId === participantId);
+  if (!current || !review) return;
+  review.likedBy ||= [];
+  const previous = [...review.likedBy];
+  if (review.likedBy.includes(current.id)) {
+    review.likedBy = review.likedBy.filter((id) => id !== current.id);
+  } else {
+    review.likedBy.push(current.id);
+  }
+  const savedOnline = await saveCloudSnapshot();
+  if (!savedOnline) {
+    review.likedBy = previous;
+    notify("Nao consegui salvar a curtida da avaliacao. Tente novamente.");
+    renderBooks();
+    return;
+  }
+  persistLocalState();
+  renderBooks();
+}
+
 async function saveFeed(event) {
   event.preventDefault();
   captureFeedFormDraft();
@@ -2746,6 +2816,28 @@ async function toggleFeedLike(feedId) {
   renderFeed();
 }
 
+async function toggleFeedCommentLike(feedId, commentId) {
+  const participant = currentParticipant();
+  const item = state.feed.find((feedItem) => feedItem.id === feedId);
+  const comment = item?.comments?.find((entry) => entry.id === commentId);
+  if (!item || !comment || !participant) return;
+  comment.likedBy ||= [];
+  const previous = [...comment.likedBy];
+  if (comment.likedBy.includes(participant.id)) {
+    comment.likedBy = comment.likedBy.filter((id) => id !== participant.id);
+  } else {
+    comment.likedBy.push(participant.id);
+  }
+  const savedOnline = await saveFeedRecord(item);
+  if (!savedOnline) {
+    comment.likedBy = previous;
+    notify("Nao consegui salvar a curtida do comentario. Tente novamente.");
+    renderFeed();
+    return;
+  }
+  renderFeed();
+}
+
 async function saveFeedComment(event) {
   event.preventDefault();
   captureFeedCommentDraft();
@@ -2765,6 +2857,7 @@ async function saveFeedComment(event) {
     participantId: participant.id,
     text,
     date: new Date().toLocaleDateString("pt-BR"),
+    likedBy: [],
   };
   item.comments.push(comment);
   const savedOnline = await saveFeedRecord(item);
@@ -2973,8 +3066,11 @@ async function moveOrder(participantId, direction) {
   renderRules();
 }
 
-function reviewCard(review) {
+function reviewCard(review, bookId) {
   const isMine = review.participantId === currentParticipant().id;
+  review.likedBy ||= [];
+  const liked = review.likedBy.includes(currentParticipant().id);
+  const likeNames = likedByText(review.likedBy);
   return `
     <article class="review-card">
       <header>
@@ -2983,6 +3079,12 @@ function reviewCard(review) {
       </header>
       ${review.threeWords ? `<p class="three-words">${escapeHtml(review.threeWords)}</p>` : ""}
       <p>${escapeHtml(review.deepReview || review.comment || "Sem resenha, só o carimbo das estrelas.")}</p>
+      <div class="review-actions">
+        <button class="like-button ${liked ? "active" : ""}" type="button" data-like-review data-book-id="${escapeAttr(bookId)}" data-participant-id="${escapeAttr(review.participantId)}">
+          ${liked ? "Descurtir" : "Curtir"} · ${review.likedBy.length} curtida${review.likedBy.length === 1 ? "" : "s"}
+        </button>
+      </div>
+      ${likeNames ? `<p class="like-details">${escapeHtml(likeNames)}</p>` : ""}
       ${isMine ? `
         <div class="button-row">
           <button class="ghost-button" type="button" data-open-review-form>Editar minha avaliação</button>
@@ -3003,6 +3105,7 @@ function feedCard(item) {
   const current = currentParticipant();
   const isMine = item.participantId === current.id;
   const liked = item.likedBy.includes(current.id);
+  const likeNames = likedByText(item.likedBy);
   return `
     <article class="feed-card">
       <header class="feed-author">
@@ -3033,6 +3136,7 @@ function feedCard(item) {
           <button class="ghost-button danger-button" type="button" data-delete-feed="${item.id}">Excluir histórico</button>
         ` : ""}
       </div>
+      ${likeNames ? `<p class="like-details">${escapeHtml(likeNames)}</p>` : ""}
       ${item.comments.length ? `
         <div class="feed-comments">
           ${item.comments.map((comment) => feedCommentHtml(comment, item.id)).join("")}
@@ -3057,14 +3161,35 @@ function feedCard(item) {
 
 function feedCommentHtml(comment, feedId) {
   const isMine = comment.participantId === currentParticipant().id;
+  comment.likedBy ||= [];
+  const liked = comment.likedBy.includes(currentParticipant().id);
+  const likeNames = likedByText(comment.likedBy);
   return `
     <div class="feed-comment">
       <strong>${escapeHtml(nameById(comment.participantId))}</strong>
-      <span>${escapeHtml(comment.date || "")}</span>
+      <div class="feed-comment-meta">
+        <span>${escapeHtml(comment.date || "")}</span>
+        <button class="like-button comment-like ${liked ? "active" : ""}" type="button" data-feed-id="${escapeAttr(feedId)}" data-comment-id="${escapeAttr(comment.id)}" data-like-feed-comment>
+          ${liked ? "Descurtir" : "Curtir"} · ${comment.likedBy.length}
+        </button>
+      </div>
       <p>${escapeHtml(comment.text)}</p>
+      ${likeNames ? `<p class="like-details">${escapeHtml(likeNames)}</p>` : ""}
       ${isMine ? `<button class="ghost-button danger-button" type="button" data-feed-id="${escapeAttr(feedId)}" data-comment-id="${escapeAttr(comment.id)}" data-delete-feed-comment>Excluir comentário</button>` : ""}
     </div>
   `;
+}
+
+function likedByText(ids = []) {
+  const names = [...new Set(ids || [])].map(nameById).filter(Boolean);
+  if (!names.length) return "";
+  return `Curtido por ${formatNameList(names)}`;
+}
+
+function formatNameList(names = []) {
+  if (names.length <= 1) return names[0] || "";
+  if (names.length === 2) return `${names[0]} e ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")} e ${names[names.length - 1]}`;
 }
 
 function bookFavoriteCard(book) {
