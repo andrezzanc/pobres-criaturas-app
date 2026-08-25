@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 29;
+const APP_VERSION = 30;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -89,6 +89,9 @@ let cloudRefreshInFlight = false;
 let notificationHistoryOpen = false;
 let suppressCloudAlerts = false;
 let lastProfileSaveIssue = "";
+let internalNavigationReady = false;
+let restoringHistory = false;
+let lastRouteKey = "";
 let lastSavedMemberProfile = null;
 let lastSavedMemberLibrary = null;
 
@@ -248,10 +251,13 @@ document.querySelectorAll(".nav-item").forEach((button) => {
   });
 });
 
-window.addEventListener("popstate", () => {
+window.addEventListener("popstate", (event) => {
   if (!notificationPanel.classList.contains("hidden")) {
     closeNotificationPanel(false);
+    if (event.state?.pobresCriaturasRoute) lastRouteKey = routeKey(event.state);
+    return;
   }
+  restoreRoute(event.state);
 });
 
 initApp();
@@ -1674,17 +1680,62 @@ function showApp() {
   document.querySelector("#session-initials").textContent = initials(user.name);
   checkMeetingReminders();
   updateNotificationBadge();
-  setView(currentView);
+  setView(currentView, { history: internalNavigationReady ? "none" : "replace" });
 }
 
 function showAuth() {
   bootScreen.classList.add("hidden");
   appShell.classList.add("hidden");
   authScreen.classList.remove("hidden");
+  internalNavigationReady = false;
+  lastRouteKey = "";
 }
 
-function setView(view) {
-  currentView = view;
+function routeState() {
+  return {
+    pobresCriaturasRoute: true,
+    view: currentView,
+    selectedBookId: selectedBookId || "",
+    selectedParticipantId: selectedParticipantId || "",
+  };
+}
+
+function routeKey(route = routeState()) {
+  const view = route.view || "feed";
+  const bookId = view === "books" ? route.selectedBookId || "" : "";
+  const participantId = view === "participant" ? route.selectedParticipantId || "" : "";
+  return `${view}|${bookId}|${participantId}`;
+}
+
+function rememberRoute(mode = "push") {
+  if (restoringHistory || !window.history?.pushState) return;
+  const route = routeState();
+  const key = routeKey(route);
+
+  if (!internalNavigationReady || mode === "replace") {
+    window.history.replaceState(route, "", window.location.href);
+    internalNavigationReady = true;
+    lastRouteKey = key;
+    return;
+  }
+
+  if (mode === "none" || key === lastRouteKey) return;
+  window.history.pushState(route, "", window.location.href);
+  lastRouteKey = key;
+}
+
+function restoreRoute(route) {
+  if (!route?.pobresCriaturasRoute) return false;
+  restoringHistory = true;
+  selectedBookId = route.selectedBookId || selectedBookId || "";
+  selectedParticipantId = route.selectedParticipantId || selectedParticipantId || "";
+  setView(route.view || "feed", { history: "none" });
+  restoringHistory = false;
+  lastRouteKey = routeKey(routeState());
+  return true;
+}
+
+function setView(view, options = {}) {
   const titles = {
     home: "Início",
     passport: "Passaporte",
@@ -1696,9 +1747,6 @@ function setView(view) {
     participant: "Perfil da integrante",
     profile: "Meu perfil",
   };
-  viewTitle.textContent = titles[view];
-  const activeView = view === "participant" ? "passport" : view;
-  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === activeView));
   const renderers = {
     home: renderHome,
     passport: renderPassport,
@@ -1710,7 +1758,15 @@ function setView(view) {
     participant: renderParticipantProfile,
     profile: renderProfile,
   };
+  if (!renderers[view]) {
+    view = "feed";
+  }
+  currentView = view;
+  viewTitle.textContent = titles[view];
+  const activeView = view === "participant" ? "passport" : view;
+  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === activeView));
   renderers[view]();
+  rememberRoute(options.history || "push");
 }
 
 function openBooks(bookId = "") {
