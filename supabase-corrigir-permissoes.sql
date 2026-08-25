@@ -56,6 +56,9 @@ drop policy if exists "Integrante atualiza proprio perfil" on public.club_member
 drop policy if exists "Integrante pode criar proprio perfil" on public.club_members;
 drop policy if exists "Integrante pode atualizar proprio perfil" on public.club_members;
 drop policy if exists "Integrantes veem integrantes" on public.club_members;
+drop policy if exists "Integrantes podem ver integrantes" on public.club_members;
+drop policy if exists "Integrantes podem criar integrantes" on public.club_members;
+drop policy if exists "Integrantes podem atualizar integrantes" on public.club_members;
 
 create policy "Integrantes podem ver integrantes"
 on public.club_members

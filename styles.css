@@ -808,6 +808,12 @@ select:focus {
   grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.15fr);
 }
 
+.participant-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
 .stat-card {
   padding: 16px;
 }
@@ -824,10 +830,43 @@ select:focus {
   font-size: 26px;
 }
 
+.profile-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
 .participant-card {
   padding: 16px;
   display: grid;
   gap: 12px;
+}
+
+.clickable-card,
+.clickable-book,
+.clickable-stamp {
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.clickable-card:hover,
+.clickable-book:hover,
+.clickable-stamp:hover,
+.clickable-card:focus-visible,
+.clickable-book:focus-visible,
+.clickable-stamp:focus-visible {
+  border-color: rgba(143, 63, 32, 0.36);
+  box-shadow: 0 14px 28px rgba(88, 58, 28, 0.12);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.card-hint {
+  margin: 0;
+  color: var(--clay);
+  font-size: 13px;
+  font-weight: 900;
 }
 
 .avatar {
@@ -868,6 +907,107 @@ select:focus {
   color: var(--soft-ink);
   font-weight: 800;
   font-size: 12px;
+}
+
+.linked-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.linked-year-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.linked-year-group {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 250, 240, 0.48);
+  overflow: hidden;
+}
+
+.linked-year-group summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 12px;
+  color: var(--ink);
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.linked-year-group summary small {
+  color: var(--soft-ink);
+  font-size: 12px;
+}
+
+.linked-year-group .linked-list {
+  margin: 0;
+  padding: 0 10px 10px;
+}
+
+.linked-list-item {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  text-align: left;
+  background: rgba(255, 250, 240, 0.72);
+  cursor: pointer;
+}
+
+.linked-list-item:hover,
+.linked-list-item:focus-visible {
+  border-color: rgba(143, 63, 32, 0.36);
+  box-shadow: 0 10px 20px rgba(88, 58, 28, 0.1);
+  outline: none;
+}
+
+.linked-list-item span {
+  color: var(--soft-ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.inline-link {
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-weight: 900;
+  text-align: left;
+  cursor: pointer;
+}
+
+.inline-link:hover,
+.inline-link:focus-visible {
+  color: var(--clay);
+  text-decoration: underline;
+  outline: none;
+}
+
+.compact-link {
+  color: var(--clay);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: inherit;
+}
+
+.identity-link {
+  cursor: pointer;
+  border-radius: var(--radius);
+}
+
+.identity-link:focus-visible {
+  outline: 2px solid rgba(143, 63, 32, 0.32);
+  outline-offset: 3px;
 }
 
 .month-strip {
@@ -1142,6 +1282,135 @@ select:focus {
   flex-wrap: wrap;
 }
 
+.review-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.reaction-widget {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.reaction-widget.is-reacting::after {
+  content: "Salvando reação...";
+  color: var(--clay);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.reaction-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 32px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: var(--soft-ink);
+  background: rgba(255, 250, 240, 0.78);
+  font-weight: 900;
+}
+
+.reaction-summary strong {
+  margin-left: 4px;
+  font-size: 12px;
+}
+
+.reaction-picker {
+  position: relative;
+}
+
+.reaction-picker summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--clay);
+  background: rgba(255, 250, 240, 0.84);
+  cursor: pointer;
+  font-weight: 900;
+  list-style: none;
+}
+
+.reaction-picker summary::-webkit-details-marker {
+  display: none;
+}
+
+.reaction-popover {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 8;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-width: min(88vw, 390px);
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: rgba(255, 250, 240, 0.98);
+  box-shadow: var(--shadow);
+}
+
+.reaction-option {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  font-size: 23px;
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.reaction-option:hover,
+.reaction-option:focus-visible,
+.reaction-option.active {
+  background: rgba(198, 90, 36, 0.12);
+  transform: translateY(-2px) scale(1.08);
+  outline: none;
+}
+
+.reaction-option:disabled {
+  cursor: wait;
+  opacity: 0.46;
+}
+
+.reaction-option.is-reacting {
+  opacity: 1;
+  background: rgba(198, 90, 36, 0.16);
+  box-shadow: 0 0 0 3px rgba(198, 90, 36, 0.14);
+}
+
+.reaction-option.is-reacting::after {
+  content: "";
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  border: 2px solid rgba(198, 90, 36, 0.45);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 760ms linear infinite;
+}
+
+.reaction-details {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .like-button {
   border: 0;
   background: transparent;
@@ -1162,6 +1431,13 @@ select:focus {
   color: var(--terracotta);
 }
 
+.like-details {
+  margin: -4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .feed-comments {
   display: grid;
   gap: 8px;
@@ -1179,6 +1455,17 @@ select:focus {
 
 .feed-comment span {
   color: var(--muted);
+  font-size: 12px;
+}
+
+.feed-comment-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.comment-like {
   font-size: 12px;
 }
 
@@ -1410,10 +1697,13 @@ select:focus {
   }
 
   .bottom-nav {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
   }
 
   .bottom-nav .nav-item {
+    flex: 0 1 calc(25% - 5px);
     min-height: 44px;
   }
 
@@ -1424,6 +1714,8 @@ select:focus {
   .books-grid,
   .favorites-grid,
   .rules-grid,
+  .participant-detail-grid,
+  .profile-facts,
   .quick-grid,
   .meeting-form,
   .feed-form {

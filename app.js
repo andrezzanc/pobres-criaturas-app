@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 25;
+const APP_VERSION = 29;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -17,6 +17,16 @@ const TABLE_CONFLICTS = {
   club_feed: "id",
   club_notifications: "id",
 };
+const REACTION_OPTIONS = [
+  { key: "heart", emoji: "\u2764\uFE0F", label: "Coração" },
+  { key: "laugh", emoji: "\u{1F602}", label: "Riso" },
+  { key: "tears", emoji: "\u{1F62D}", label: "Lágrimas" },
+  { key: "sick", emoji: "\u{1F922}", label: "Enjoo" },
+  { key: "shock", emoji: "\u{1F62E}", label: "Choque" },
+  { key: "write", emoji: "\u270D\uFE0F", label: "Anotando" },
+  { key: "dove", emoji: "\u{1F54A}\uFE0F", label: "Paz" },
+  { key: "hug", emoji: "\u{1FAC2}", label: "Abraço" },
+];
 
 const seed = {
   __version: APP_VERSION,
@@ -56,8 +66,9 @@ A data, o local e as observações da reunião podem ser ajustados por qualquer 
 let state = loadState();
 let session = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
 let authMode = "login";
-let currentView = "home";
+let currentView = "feed";
 let selectedBookId = latestBook()?.id || "";
+let selectedParticipantId = "";
 let meetingEditing = false;
 let bookFormMode = null;
 let bookFormDraft = null;
@@ -893,7 +904,7 @@ async function loadReviewRecords() {
     console.warn("Nao foi possivel carregar avaliacoes oficiais", result.error);
     return false;
   }
-  const likeBackup = await reviewLikeBackupMap();
+  const reactionBackup = await reviewReactionBackupMap();
   const data = result.data.slice().sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0));
   const officialReviews = {};
   state.books.forEach((book) => {
@@ -901,38 +912,39 @@ async function loadReviewRecords() {
   });
   (data || []).forEach((row) => {
     officialReviews[row.book_id] ||= [];
+    const reactions = reactionBackup.get(reviewLikeKey(row.book_id, row.participant_id)) || {};
     officialReviews[row.book_id].push({
       participantId: row.participant_id,
       rating: Number(row.rating || 0),
       threeWords: row.three_words || "",
       deepReview: row.deep_review || "",
       comment: row.deep_review || "",
-      likedBy: likeBackup.get(reviewLikeKey(row.book_id, row.participant_id)) || [],
+      reactions,
+      likedBy: reactions.heart || [],
     });
   });
   state.reviews = officialReviews;
   return true;
 }
 
-async function reviewLikeBackupMap() {
+async function reviewReactionBackupMap() {
   const sources = [lastCloudState?.reviews, state.reviews];
   const current = await fetchCloudState();
   if (current?.data?.reviews) sources.push(current.data.reviews);
-  return collectReviewLikes(sources);
+  return collectReviewReactions(sources);
 }
 
-function collectReviewLikes(sources = []) {
-  const likes = new Map();
+function collectReviewReactions(sources = []) {
+  const reactionsByReview = new Map();
   sources.filter(Boolean).forEach((reviewsByBook) => {
     Object.entries(reviewsByBook || {}).forEach(([bookId, reviews]) => {
       (reviews || []).forEach((review) => {
-        if (Array.isArray(review?.likedBy) && review.likedBy.length) {
-          likes.set(reviewLikeKey(bookId, review.participantId), [...new Set(review.likedBy)]);
-        }
+        const reactions = normalizedReactions(review);
+        if (reactionTotal(reactions)) reactionsByReview.set(reviewLikeKey(bookId, review.participantId), reactions);
       });
     });
   });
-  return likes;
+  return reactionsByReview;
 }
 
 function reviewLikeKey(bookId, participantId) {
@@ -1012,9 +1024,11 @@ async function loadFeedRecords() {
     console.warn("Nao foi possivel carregar feed oficial", result.error);
     return false;
   }
+  const reactionBackup = await feedReactionBackupMap();
   const data = result.data.slice().sort((a, b) => Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0));
   const officialFeed = (data || []).map((row) => {
     const readDate = inputDateFromDisplay(row.date || row.created_at) || todayInputDate();
+    const reactions = reactionBackup.get(row.id) || normalizedReactions({ likedBy: row.liked_by });
     return {
       id: row.id,
       participantId: row.participant_id,
@@ -1024,8 +1038,9 @@ async function loadFeedRecords() {
       bookId: row.book_id || "",
       text: row.text || "",
       progress: Number(row.progress || 0),
-      likes: Array.isArray(row.liked_by) ? row.liked_by.length : 0,
-      likedBy: Array.isArray(row.liked_by) ? row.liked_by : [],
+      reactions,
+      likes: reactionTotal(reactions),
+      likedBy: reactions.heart || [],
       comments: normalizeFeedComments(row.comments),
       editedAt: row.edited_at || "",
     };
@@ -1034,15 +1049,31 @@ async function loadFeedRecords() {
   return true;
 }
 
+async function feedReactionBackupMap() {
+  const sources = [lastCloudState?.feed, state.feed];
+  const current = await fetchCloudState();
+  if (current?.data?.feed) sources.push(current.data.feed);
+  const reactionsByFeed = new Map();
+  sources.filter(Boolean).forEach((feedItems) => {
+    (feedItems || []).forEach((item) => {
+      const reactions = normalizedReactions(item);
+      if (item?.id && reactionTotal(reactions)) reactionsByFeed.set(item.id, reactions);
+    });
+  });
+  return reactionsByFeed;
+}
+
 function normalizeFeedComments(comments = []) {
   return (Array.isArray(comments) ? comments : []).map((comment) => ({
     ...comment,
-    likedBy: Array.isArray(comment?.likedBy) ? comment.likedBy : [],
+    reactions: normalizedReactions(comment),
+    likedBy: normalizedReactions(comment).heart || [],
   }));
 }
 
 async function saveFeedRecord(item) {
   if (!clubDb || !item) return saveCloudState();
+  const reactions = normalizedReactions(item);
   const saved = await saveRecordOnServer("club_feed", {
     id: item.id,
     participant_id: item.participantId,
@@ -1051,8 +1082,8 @@ async function saveFeedRecord(item) {
     type: item.type || "",
     text: item.text || "",
     progress: Number(item.progress || 0),
-    liked_by: item.likedBy || [],
-    comments: item.comments || [],
+    liked_by: reactions.heart || [],
+    comments: normalizeFeedComments(item.comments),
     edited_at: item.editedAt || "",
     updated_at: new Date().toISOString(),
   });
@@ -1575,19 +1606,53 @@ function withStateDefaults(value) {
   value.indicationOrder ||= [];
   value.feed ||= [];
   value.feed.forEach((item) => {
-    item.likedBy ||= [];
+    item.reactions = normalizedReactions(item);
+    item.likedBy = item.reactions.heart || [];
     item.comments ||= [];
     item.comments.forEach((comment) => {
-      comment.likedBy ||= [];
+      comment.reactions = normalizedReactions(comment);
+      comment.likedBy = comment.reactions.heart || [];
     });
-    item.likes = item.likedBy.length;
+    item.likes = reactionTotal(item.reactions);
   });
   Object.values(value.reviews || {}).forEach((reviews) => {
     (reviews || []).forEach((review) => {
-      review.likedBy ||= [];
+      review.reactions = normalizedReactions(review);
+      review.likedBy = review.reactions.heart || [];
     });
   });
   return value;
+}
+
+function normalizedReactions(target = {}) {
+  const result = {};
+  REACTION_OPTIONS.forEach((option) => {
+    result[option.key] = Array.isArray(target.reactions?.[option.key])
+      ? [...new Set(target.reactions[option.key])]
+      : [];
+  });
+  if (Array.isArray(target.likedBy) && target.likedBy.length) {
+    result.heart = [...new Set([...(result.heart || []), ...target.likedBy])];
+  }
+  return result;
+}
+
+function reactionTotal(reactions = {}) {
+  return REACTION_OPTIONS.reduce((sum, option) => sum + (reactions[option.key]?.length || 0), 0);
+}
+
+function toggleReactionOnTarget(target, participantId, reactionKey) {
+  target.reactions = normalizedReactions(target);
+  const previousKey = REACTION_OPTIONS.find((option) => target.reactions[option.key].includes(participantId))?.key || "";
+  REACTION_OPTIONS.forEach((option) => {
+    target.reactions[option.key] = target.reactions[option.key].filter((id) => id !== participantId);
+  });
+  if (previousKey !== reactionKey) {
+    target.reactions[reactionKey] ||= [];
+    target.reactions[reactionKey].push(participantId);
+  }
+  target.likedBy = target.reactions.heart || [];
+  target.likes = reactionTotal(target.reactions);
 }
 
 function startSession(user) {
@@ -1628,10 +1693,12 @@ function setView(view) {
     rules: "Ordem e Regras",
     favorites: "Favoritos",
     stats: "Estatísticas",
+    participant: "Perfil da integrante",
     profile: "Meu perfil",
   };
   viewTitle.textContent = titles[view];
-  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
+  const activeView = view === "participant" ? "passport" : view;
+  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === activeView));
   const renderers = {
     home: renderHome,
     passport: renderPassport,
@@ -1640,6 +1707,7 @@ function setView(view) {
     rules: renderRules,
     favorites: renderFavorites,
     stats: renderStats,
+    participant: renderParticipantProfile,
     profile: renderProfile,
   };
   renderers[view]();
@@ -1650,6 +1718,60 @@ function openBooks(bookId = "") {
   reviewFormOpen = false;
   bookFormMode = null;
   setView("books");
+}
+
+function openParticipant(participantId = "") {
+  selectedParticipantId = participantId || currentParticipant()?.id || "";
+  setView("participant");
+}
+
+function wireNavigationLinks(root = viewRoot) {
+  root.querySelectorAll("[data-open-book]").forEach((element) => {
+    bindNavigationTrigger(element, () => openBooks(element.dataset.openBook));
+  });
+  root.querySelectorAll("[data-open-participant]").forEach((element) => {
+    bindNavigationTrigger(element, () => openParticipant(element.dataset.openParticipant));
+  });
+}
+
+function bindNavigationTrigger(element, action) {
+  if (!element || element.dataset.navigationReady === "true") return;
+  element.dataset.navigationReady = "true";
+  element.addEventListener("click", (event) => {
+    event.stopPropagation();
+    action();
+  });
+  if (element.tagName !== "BUTTON" && element.tagName !== "A") {
+    element.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      action();
+    });
+  }
+}
+
+async function runReactionAction(button, action) {
+  if (!button || button.dataset.reacting === "true") return;
+  const widget = button.closest(".reaction-widget");
+  const options = widget ? [...widget.querySelectorAll(".reaction-option")] : [button];
+  button.dataset.reacting = "true";
+  button.classList.add("is-reacting");
+  widget?.classList.add("is-reacting");
+  options.forEach((option) => {
+    option.dataset.wasDisabled = option.disabled ? "true" : "false";
+    option.disabled = true;
+  });
+  try {
+    await action();
+  } finally {
+    button.classList.remove("is-reacting");
+    delete button.dataset.reacting;
+    widget?.classList.remove("is-reacting");
+    options.forEach((option) => {
+      option.disabled = option.dataset.wasDisabled === "true";
+      delete option.dataset.wasDisabled;
+    });
+  }
 }
 
 function getUser() {
@@ -1738,6 +1860,7 @@ function renderHome() {
   const participant = currentParticipant();
   const featuredBook = latestBook();
   const readingBook = currentReadingBook(participant) || featuredBook;
+  const favoriteBook = bookByTitle(participant.favoriteBook);
   const featuredProgress = featuredBook ? state.progress[participant.id]?.[featuredBook.id] || 0 : 0;
   const readingProgress = readingBook ? state.progress[participant.id]?.[readingBook.id] || 0 : 0;
   viewRoot.innerHTML = `
@@ -1753,7 +1876,7 @@ function renderHome() {
           ${passportPortraitHtml(participant)}
         </div>
         <div class="passport-meta">
-          <div class="stamp"><span>Livro favorito</span><strong>${escapeHtml(participant.favoriteBook)}</strong></div>
+          <div class="stamp ${favoriteBook ? "clickable-stamp" : ""}" ${favoriteBook ? `role="button" tabindex="0" data-open-book="${escapeAttr(favoriteBook.id)}"` : ""}><span>Livro favorito</span><strong>${escapeHtml(participant.favoriteBook)}</strong></div>
           <div class="stamp"><span>Lidos no ano</span><strong>${participant.booksReadYear || 0} livros</strong></div>
           <div class="stamp"><span>Lidos no clube</span><strong>${participant.booksReadClub || 0} livros</strong></div>
           <div class="stamp"><span>Meta do ano</span><strong>${participant.goal || 0} livros</strong></div>
@@ -1784,15 +1907,6 @@ function renderHome() {
       </section>
     ` : emptyBooksPanel()}
 
-    <section class="quick-grid">
-      ${quickStat("Integrantes inscritas", String(state.participants.length), "aparecem conforme cadastro")}
-      ${quickStat("Livros lidos no ano", String(totalReadCurrentYear()), String(new Date().getFullYear()))}
-      ${quickStat("Livros lidos no clube", String(totalReadInClub()), "desde a entrada das integrantes")}
-    </section>
-
-    <section class="mobile-shortcuts">
-      <button class="secondary-button" type="button" data-jump="stats">Ver estatísticas</button>
-    </section>
   `;
 
   document.querySelector("[data-edit-meeting]")?.addEventListener("click", () => {
@@ -1805,7 +1919,7 @@ function renderHome() {
     renderHome();
   });
   document.querySelector("[data-jump='books']")?.addEventListener("click", () => openBooks());
-  document.querySelector("[data-jump='stats']")?.addEventListener("click", () => setView("stats"));
+  wireNavigationLinks();
 }
 
 function meetingSummary() {
@@ -1821,7 +1935,7 @@ function meetingSummary() {
         <button class="icon-button" data-edit-meeting title="Alterar reunião" aria-label="Alterar reunião">✎</button>
       </div>
       <div class="meeting-facts">
-        <div class="stamp"><span>Livro</span><strong>${book ? escapeHtml(book.title) : "A definir"}</strong></div>
+        <div class="stamp ${book ? "clickable-stamp" : ""}" ${book ? `role="button" tabindex="0" data-open-book="${escapeAttr(book.id)}"` : ""}><span>Livro</span><strong>${book ? escapeHtml(book.title) : "A definir"}</strong></div>
         <div class="stamp"><span>Local</span><strong>${state.meeting.place ? escapeHtml(state.meeting.place) : "A definir"}</strong></div>
         <div class="stamp"><span>Informações</span><strong>${state.meeting.notes ? escapeHtml(state.meeting.notes) : "Sem observações"}</strong></div>
       </div>
@@ -1867,6 +1981,89 @@ function renderPassport() {
     </section>
     ${state.participants.length ? `<section class="participants-grid">${state.participants.map(participantCard).join("")}</section>` : emptyPanel("Nenhuma integrante inscrita ainda", "Quando alguém se cadastrar, o passaporte dela aparece aqui.")}
   `;
+  wireNavigationLinks();
+}
+
+function renderParticipantProfile() {
+  const participant = participantById(selectedParticipantId) || currentParticipant();
+  if (!participant) {
+    setView("passport");
+    return;
+  }
+  selectedParticipantId = participant.id;
+  viewTitle.textContent = participant.name;
+  const indicatedBooks = sortedBooks().filter((book) => book.indicatedBy === participant.id);
+  const reviewRows = participantReviewEntries(participant.id);
+  const completedRows = participantCompletedEntries(participant.id);
+  const favoriteBooks = (state.favorites[participant.id] || []).map(bookById).filter(Boolean);
+  const currentBook = currentReadingBook(participant);
+  const profileFavoriteBook = bookByTitle(participant.favoriteBook);
+  const currentProgress = currentBook ? Number(state.progress[participant.id]?.[currentBook.id] || 0) : 0;
+  const indicatedScores = indicatedBooks.map((book) => averageFor(book.id)).filter(Boolean);
+  const reviewScores = reviewRows.map((item) => Number(item.review.rating || 0)).filter(Boolean);
+
+  viewRoot.innerHTML = `
+    <section class="passport-page participant-profile">
+      <div class="section-heading">
+        <button class="ghost-button" type="button" data-back-club>Voltar para Clube</button>
+      </div>
+      <div class="passport-title has-portrait">
+        <div>
+          <p class="eyebrow">Passaporte da integrante</p>
+          <h3>${escapeHtml(participant.name)}</h3>
+          <p class="muted">${escapeHtml(participant.role)}</p>
+        </div>
+        ${passportPortraitHtml(participant)}
+      </div>
+      <div class="profile-facts">
+        <div class="stamp ${profileFavoriteBook ? "clickable-stamp" : ""}" ${profileFavoriteBook ? `role="button" tabindex="0" data-open-book="${escapeAttr(profileFavoriteBook.id)}"` : ""}><span>Livro favorito</span><strong>${escapeHtml(participant.favoriteBook || "Ainda escolhendo")}</strong></div>
+        <div class="stamp"><span>Personagem fav</span><strong>${escapeHtml(participant.favoriteCharacter || "Ainda escolhendo")}</strong></div>
+        <div class="stamp ${currentBook ? "clickable-stamp" : ""}" ${currentBook ? `role="button" tabindex="0" data-open-book="${escapeAttr(currentBook.id)}"` : ""}><span>Leitura atual</span><strong>${currentBook ? `${currentProgress}% de ${escapeHtml(currentBook.title)}` : "Nenhum livro cadastrado"}</strong></div>
+        <div class="stamp"><span>Gêneros favoritos</span><strong>${escapeHtml((participant.genres || []).join(", ") || "Ainda escolhendo")}</strong></div>
+      </div>
+      <p>${escapeHtml(participant.quote || "Meu passaporte começou hoje.")}</p>
+    </section>
+
+    <section class="stats-grid">
+      ${statCard("Lidos no ano", String(participant.booksReadYear || 0), String(new Date().getFullYear()))}
+      ${statCard("Lidos no clube", String(participant.booksReadClub || 0), "desde a entrada")}
+      ${statCard("Indicações cadastradas", String(indicatedBooks.length), "livros escolhidos por ela")}
+      ${statCard("Média das indicações", averageLabel(indicatedScores), "pelas avaliações do clube")}
+      ${statCard("Avaliações feitas", String(reviewRows.length), "resenhas ou estrelas")}
+      ${statCard("Média das notas dela", averageLabel(reviewScores), "como avaliadora")}
+      ${statCard("Favoritos", String(favoriteBooks.length), "estante pessoal")}
+      ${statCard("Gêneros indicados", participantGenreLine(participant.id), "mais frequentes")}
+    </section>
+
+    <section class="participant-detail-grid">
+      <article class="panel">
+        <p class="eyebrow">Indicações</p>
+        <h3>Livros indicados por ${escapeHtml(participant.name)}</h3>
+        ${groupedBookList(indicatedBooks, "Nenhum livro indicado ainda.", (book) => `${book.month} ${book.year} · média ${averageFor(book.id).toFixed(1)}`)}
+      </article>
+
+      <article class="panel">
+        <p class="eyebrow">Leituras concluídas</p>
+        <h3>Histórico de finalizações</h3>
+        ${completedBookList(completedRows)}
+      </article>
+
+      <article class="panel">
+        <p class="eyebrow">Avaliações</p>
+        <h3>O que ${escapeHtml(participant.name)} avaliou</h3>
+        ${participantReviewList(reviewRows)}
+      </article>
+
+      <article class="panel">
+        <p class="eyebrow">Favoritos</p>
+        <h3>Estante afetiva</h3>
+        ${linkedBookList(favoriteBooks, "Nenhum favorito marcado ainda.", (book) => `${book.author} · média ${averageFor(book.id).toFixed(1)}`)}
+      </article>
+    </section>
+  `;
+
+  document.querySelector("[data-back-club]")?.addEventListener("click", () => setView("passport"));
+  wireNavigationLinks();
 }
 
 function renderBooks() {
@@ -1917,6 +2114,7 @@ function renderBooks() {
     });
   });
   wireReviewControls(selected);
+  wireNavigationLinks();
 }
 
 function bookReviewArea(selected) {
@@ -1927,7 +2125,7 @@ function bookReviewArea(selected) {
         <div class="book-showcase">
           ${coverHtml(selected)}
           <div>
-            <p class="eyebrow">${escapeHtml(selected.month)} ${selected.year} | indicado por ${escapeHtml(nameById(selected.indicatedBy))}</p>
+            <p class="eyebrow">${escapeHtml(selected.month)} ${selected.year} | indicado por <button class="inline-link compact-link" type="button" data-open-participant="${escapeAttr(selected.indicatedBy)}">${escapeHtml(nameById(selected.indicatedBy))}</button></p>
             <h3>${escapeHtml(selected.title)}</h3>
             <p class="muted">${escapeHtml(selected.author)} | ${escapeHtml(selected.genre || "Sem gênero")} | ${selected.pages || "?"} páginas</p>
             <div class="rating-big">${formatRating(averageFor(selected.id))} <span class="star-row">${stars(averageFor(selected.id))}</span></div>
@@ -2065,7 +2263,6 @@ function captureFeedFormDraft() {
   feedFormDraft = {
     feedId: data.get("feedId") || "",
     bookId: data.get("bookId") || "",
-    type: data.get("type") || "",
     progress: data.get("progress") || "",
     readDate: data.get("readDate") || "",
     text: data.get("text") || "",
@@ -2121,8 +2318,8 @@ function wireReviewControls(selected) {
   document.querySelectorAll("[data-delete-review]").forEach((button) => {
     button.addEventListener("click", () => deleteReview(selected.id));
   });
-  document.querySelectorAll("[data-like-review]").forEach((button) => {
-    button.addEventListener("click", () => toggleReviewLike(button.dataset.bookId, button.dataset.participantId));
+  document.querySelectorAll("[data-react-review]").forEach((button) => {
+    button.addEventListener("click", () => runReactionAction(button, () => toggleReviewReaction(button.dataset.bookId, button.dataset.participantId, button.dataset.reaction)));
   });
   document.querySelector("[data-favorite]")?.addEventListener("click", () => toggleFavorite(selected.id));
   document.querySelector("[data-edit-book]")?.addEventListener("click", () => {
@@ -2180,11 +2377,11 @@ function renderFeed() {
   document.querySelectorAll("[data-delete-feed]").forEach((button) => {
     button.addEventListener("click", () => deleteFeedItem(button.dataset.deleteFeed));
   });
-  document.querySelectorAll("[data-like-feed]").forEach((button) => {
-    button.addEventListener("click", () => toggleFeedLike(button.dataset.likeFeed));
+  document.querySelectorAll("[data-react-feed]").forEach((button) => {
+    button.addEventListener("click", () => runReactionAction(button, () => toggleFeedReaction(button.dataset.feedId, button.dataset.reaction)));
   });
-  document.querySelectorAll("[data-like-feed-comment]").forEach((button) => {
-    button.addEventListener("click", () => toggleFeedCommentLike(button.dataset.feedId, button.dataset.commentId));
+  document.querySelectorAll("[data-react-feed-comment]").forEach((button) => {
+    button.addEventListener("click", () => runReactionAction(button, () => toggleFeedCommentReaction(button.dataset.feedId, button.dataset.commentId, button.dataset.reaction)));
   });
   document.querySelectorAll("[data-comment-feed]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -2210,25 +2407,19 @@ function renderFeed() {
   document.querySelectorAll("[data-delete-feed-comment]").forEach((button) => {
     button.addEventListener("click", () => deleteFeedComment(button.dataset.feedId, button.dataset.commentId));
   });
+  wireNavigationLinks();
 }
 
 function feedFormHtml(item, currentBook, participant) {
   const draft = feedFormDraft && (feedFormDraft.feedId || "") === (item?.id || "") ? feedFormDraft : {};
   const field = (name, fallback = "") => draft[name] ?? fallback ?? "";
   const selectedBookIdForForm = field("bookId", item?.bookId || currentBook?.id);
-  const selectedType = field("type", item?.type || "Começou a ler");
   const progress = field("progress", item?.progress ?? state.progress[participant.id]?.[selectedBookIdForForm] ?? 0);
   const readDate = field("readDate", item?.readDate || inputDateFromDisplay(item?.date) || todayInputDate());
-  const options = ["Começou a ler", "Atualizou progresso", "Marcou como lido", "Fez um histórico de leitura"];
   return `
     <form id="feed-form" class="feed-form">
       <input type="hidden" name="feedId" value="${escapeAttr(field("feedId", item?.id || ""))}" />
       <label><span>Livro</span>${bookSelect(selectedBookIdForForm)}</label>
-      <label><span>Status</span>
-        <select name="type">
-          ${options.map((option) => `<option ${option === selectedType ? "selected" : ""}>${option}</option>`).join("")}
-        </select>
-      </label>
       <label><span>Progresso</span><input name="progress" type="number" min="0" max="100" value="${progress}" /></label>
       <label><span>Data da leitura</span><input name="readDate" type="date" value="${escapeAttr(readDate)}" /></label>
       <button class="save-button" type="submit">${item ? "Salvar histórico" : "Publicar"}</button>
@@ -2331,11 +2522,7 @@ function renderFavorites() {
       ${favorites.length ? favorites.map(bookFavoriteCard).join("") : emptyPanel("Nenhum favorito ainda", "Abra um livro cadastrado e toque em adicionar aos favoritos.")}
     </section>
   `;
-  document.querySelectorAll("[data-open-book]").forEach((button) => {
-    button.addEventListener("click", () => {
-      openBooks(button.dataset.openBook);
-    });
-  });
+  wireNavigationLinks();
 }
 
 function renderStats() {
@@ -2354,12 +2541,12 @@ function renderStats() {
   const maxReadYearCount = Math.max(1, ...readYearRows.map((row) => row.count));
   viewRoot.innerHTML = `
     <section class="stats-grid">
-      ${statCard("Maior nota do ano", bestYear?.title || "A definir", bestYear ? averageFor(bestYear.id).toFixed(1) : "0.0")}
-      ${statCard("Maior nota da história", bestHistory?.title || "A definir", bestHistory ? averageFor(bestHistory.id).toFixed(1) : "0.0")}
-      ${statCard("Menor nota do ano", worstYear?.title || "A definir", worstYear ? averageFor(worstYear.id).toFixed(1) : "0.0")}
-      ${statCard("Menor nota da história", worstHistory?.title || "A definir", worstHistory ? averageFor(worstHistory.id).toFixed(1) : "0.0")}
-      ${statCard("Indica melhores livros", recommender?.name || "A definir", recommender ? recommender.score.toFixed(1) : "0.0")}
-      ${statCard("Indica os piores", lowRecommender?.name || "A definir", lowRecommender ? lowRecommender.score.toFixed(1) : "0.0")}
+      ${statCard("Maior nota do ano", bestYear?.title || "A definir", bestYear ? averageFor(bestYear.id).toFixed(1) : "0.0", bestYear ? `data-open-book="${escapeAttr(bestYear.id)}"` : "")}
+      ${statCard("Maior nota da história", bestHistory?.title || "A definir", bestHistory ? averageFor(bestHistory.id).toFixed(1) : "0.0", bestHistory ? `data-open-book="${escapeAttr(bestHistory.id)}"` : "")}
+      ${statCard("Menor nota do ano", worstYear?.title || "A definir", worstYear ? averageFor(worstYear.id).toFixed(1) : "0.0", worstYear ? `data-open-book="${escapeAttr(worstYear.id)}"` : "")}
+      ${statCard("Menor nota da história", worstHistory?.title || "A definir", worstHistory ? averageFor(worstHistory.id).toFixed(1) : "0.0", worstHistory ? `data-open-book="${escapeAttr(worstHistory.id)}"` : "")}
+      ${statCard("Indica melhores livros", recommender?.name || "A definir", recommender ? recommender.score.toFixed(1) : "0.0", recommender ? `data-open-participant="${escapeAttr(recommender.id)}"` : "")}
+      ${statCard("Indica os piores", lowRecommender?.name || "A definir", lowRecommender ? lowRecommender.score.toFixed(1) : "0.0", lowRecommender ? `data-open-participant="${escapeAttr(lowRecommender.id)}"` : "")}
       ${statCard("Comentários registrados", String(totalReviews()), "avaliações")}
       ${statCard("Livros lidos no ano", String(totalReadCurrentYear()), `${new Date().getFullYear()} pela data da leitura`)}
       ${statCard("Livros lidos no clube", String(totalReadInClub()), "leituras concluídas registradas")}
@@ -2411,6 +2598,7 @@ function renderStats() {
       </div>
     </section>
   `;
+  wireNavigationLinks();
 }
 
 function renderProfile() {
@@ -2429,6 +2617,7 @@ function renderProfile() {
     <section class="panel">
       <form id="profile-form" class="meeting-form">
         <label><span>Nome da integrante</span><input name="name" required value="${escapeAttr(participant.name)}" /></label>
+        <label><span>Frase do passaporte</span><textarea name="role" placeholder="Ex.: Curadora dos surtos literários e dos debates sem hora">${escapeHtml(participant.role || "")}</textarea></label>
         <label><span>Livro favorito</span><input name="favoriteBook" value="${escapeAttr(participant.favoriteBook)}" /></label>
         <label><span>Personagem favorito</span><input name="favoriteCharacter" value="${escapeAttr(participant.favoriteCharacter)}" /></label>
         <label><span>Livros lidos neste ano</span><input name="booksReadYear" type="number" min="0" value="${participant.booksReadYear || 0}" /></label>
@@ -2586,7 +2775,7 @@ async function saveReview(event, bookId) {
     existing.deepReview = deepReview;
     existing.comment = deepReview;
   } else {
-    state.reviews[bookId].push({ participantId: participant.id, rating, threeWords, deepReview, comment: deepReview });
+    state.reviews[bookId].push({ participantId: participant.id, rating, threeWords, deepReview, comment: deepReview, reactions: {}, likedBy: [] });
   }
   const review = state.reviews[bookId].find((item) => item.participantId === participant.id);
   const savedOnline = await saveReviewRecord(bookId, review);
@@ -2648,21 +2837,17 @@ async function toggleFavorite(bookId) {
   renderBooks();
 }
 
-async function toggleReviewLike(bookId, participantId) {
+async function toggleReviewReaction(bookId, participantId, reactionKey) {
   const current = currentParticipant();
   const review = (state.reviews[bookId] || []).find((item) => item.participantId === participantId);
-  if (!current || !review) return;
-  review.likedBy ||= [];
-  const previous = [...review.likedBy];
-  if (review.likedBy.includes(current.id)) {
-    review.likedBy = review.likedBy.filter((id) => id !== current.id);
-  } else {
-    review.likedBy.push(current.id);
-  }
+  if (!current || !review || !REACTION_OPTIONS.some((option) => option.key === reactionKey)) return;
+  const previous = normalizedReactions(review);
+  toggleReactionOnTarget(review, current.id, reactionKey);
   const savedOnline = await saveCloudSnapshot();
   if (!savedOnline) {
-    review.likedBy = previous;
-    notify("Nao consegui salvar a curtida da avaliacao. Tente novamente.");
+    review.reactions = previous;
+    review.likedBy = previous.heart || [];
+    notify("Nao consegui salvar a reação da avaliacao. Tente novamente.");
     renderBooks();
     return;
   }
@@ -2678,7 +2863,7 @@ async function saveFeed(event) {
   const feedId = data.get("feedId");
   const bookId = data.get("bookId");
   const progress = Math.max(0, Math.min(100, Number(data.get("progress") || 0)));
-  const type = data.get("type");
+  const type = readingStatusFromProgress(progress);
   const text = data.get("text");
   const readDate = data.get("readDate") || todayInputDate();
   state.progress[participant.id] ||= {};
@@ -2709,6 +2894,7 @@ async function saveFeed(event) {
       progress,
       likes: 0,
       likedBy: [],
+      reactions: {},
       comments: [],
     };
     state.feed.unshift(savedFeedItem);
@@ -2769,7 +2955,7 @@ async function deleteFeedItem(feedId) {
 
 function syncCompletedBook(participant, bookId, type, progress, readDate = todayInputDate(), previousReadDate = "") {
   const completed = type === "Marcou como lido" || Number(progress) >= 100;
-  if (!completed || !bookId) return;
+  if (!bookId) return;
   participant.completedBookIds ||= [];
   state.progress[participant.id] ||= {};
   const completedDates = state.progress[participant.id].__completedDates || {};
@@ -2778,6 +2964,18 @@ function syncCompletedBook(participant, bookId, type, progress, readDate = today
   const previousYear = readYear(previousReadDate || completedDates[bookId]);
   const nextYear = readYear(readDate);
   const currentYear = new Date().getFullYear();
+
+  if (!completed) {
+    if (wasCompleted) {
+      participant.completedBookIds = participant.completedBookIds.filter((id) => id !== bookId);
+      participant.booksReadClub = Math.max(0, Number(participant.booksReadClub || 0) - 1);
+      if (previousYear === currentYear) {
+        participant.booksReadYear = Math.max(0, Number(participant.booksReadYear || 0) - 1);
+      }
+      delete completedDates[bookId];
+    }
+    return;
+  }
 
   if (!wasCompleted) {
     participant.completedBookIds.push(bookId);
@@ -2796,42 +2994,34 @@ function syncCompletedBook(participant, bookId, type, progress, readDate = today
   completedDates[bookId] = readDate || todayInputDate();
 }
 
-async function toggleFeedLike(feedId) {
+async function toggleFeedReaction(feedId, reactionKey) {
   const participant = currentParticipant();
   const item = state.feed.find((feedItem) => feedItem.id === feedId);
-  if (!item || !participant) return;
-  item.likedBy ||= [];
-  if (item.likedBy.includes(participant.id)) {
-    item.likedBy = item.likedBy.filter((id) => id !== participant.id);
-    notify("Curtida removida.");
-  } else {
-    item.likedBy.push(participant.id);
-    notify("Histórico curtido.");
-  }
-  item.likes = item.likedBy.length;
+  if (!item || !participant || !REACTION_OPTIONS.some((option) => option.key === reactionKey)) return;
+  const previous = normalizedReactions(item);
+  toggleReactionOnTarget(item, participant.id, reactionKey);
   const savedOnline = await saveFeedRecord(item);
   if (!savedOnline) {
-    notify("Nao consegui salvar a curtida na nuvem. Tente novamente.");
+    item.reactions = previous;
+    item.likedBy = previous.heart || [];
+    item.likes = reactionTotal(previous);
+    notify("Nao consegui salvar a reação na nuvem. Tente novamente.");
   }
   renderFeed();
 }
 
-async function toggleFeedCommentLike(feedId, commentId) {
+async function toggleFeedCommentReaction(feedId, commentId, reactionKey) {
   const participant = currentParticipant();
   const item = state.feed.find((feedItem) => feedItem.id === feedId);
   const comment = item?.comments?.find((entry) => entry.id === commentId);
-  if (!item || !comment || !participant) return;
-  comment.likedBy ||= [];
-  const previous = [...comment.likedBy];
-  if (comment.likedBy.includes(participant.id)) {
-    comment.likedBy = comment.likedBy.filter((id) => id !== participant.id);
-  } else {
-    comment.likedBy.push(participant.id);
-  }
+  if (!item || !comment || !participant || !REACTION_OPTIONS.some((option) => option.key === reactionKey)) return;
+  const previous = normalizedReactions(comment);
+  toggleReactionOnTarget(comment, participant.id, reactionKey);
   const savedOnline = await saveFeedRecord(item);
   if (!savedOnline) {
-    comment.likedBy = previous;
-    notify("Nao consegui salvar a curtida do comentario. Tente novamente.");
+    comment.reactions = previous;
+    comment.likedBy = previous.heart || [];
+    notify("Nao consegui salvar a reação do comentario. Tente novamente.");
     renderFeed();
     return;
   }
@@ -2858,6 +3048,7 @@ async function saveFeedComment(event) {
     text,
     date: new Date().toLocaleDateString("pt-BR"),
     likedBy: [],
+    reactions: {},
   };
   item.comments.push(comment);
   const savedOnline = await saveFeedRecord(item);
@@ -2918,6 +3109,7 @@ async function saveProfile(event) {
   const user = getUser();
   participant.name = data.get("name").trim() || participant.name;
   if (user) user.name = participant.name;
+  const customRole = data.get("role").trim();
   participant.favoriteBook = data.get("favoriteBook");
   participant.favoriteCharacter = data.get("favoriteCharacter");
   participant.booksReadYear = Number(data.get("booksReadYear") || 0);
@@ -2925,7 +3117,7 @@ async function saveProfile(event) {
   participant.goal = Number(data.get("goal") || 12);
   participant.genres = data.get("genres").split(",").map((item) => item.trim()).filter(Boolean);
   participant.quote = data.get("quote");
-  participant.role = generateRole({
+  participant.role = customRole || generateRole({
     personality: participant.personality,
     discussion: participant.discussion,
     genres: participant.genres,
@@ -3025,8 +3217,9 @@ function monthSelect(selectedMonth) {
 }
 
 function participantCard(participant) {
+  const favoriteBook = bookByTitle(participant.favoriteBook);
   return `
-    <article class="participant-card">
+    <article class="participant-card clickable-card" role="button" tabindex="0" data-open-participant="${escapeAttr(participant.id)}">
       <div class="book-line">
         ${avatarHtml(participant)}
         <div>
@@ -3036,12 +3229,134 @@ function participantCard(participant) {
       </div>
       <div class="stamp"><span>Lidos no ano</span><strong>${participant.booksReadYear || 0} livros</strong></div>
       <div class="stamp"><span>Lidos no clube</span><strong>${participant.booksReadClub || 0} livros</strong></div>
-      <div class="stamp"><span>Livro favorito</span><strong>${escapeHtml(participant.favoriteBook)}</strong></div>
+      <div class="stamp ${favoriteBook ? "clickable-stamp" : ""}" ${favoriteBook ? `role="button" tabindex="0" data-open-book="${escapeAttr(favoriteBook.id)}"` : ""}><span>Livro favorito</span><strong>${escapeHtml(participant.favoriteBook)}</strong></div>
       <div class="stamp"><span>Personagem fav</span><strong>${escapeHtml(participant.favoriteCharacter)}</strong></div>
       <p>${escapeHtml(participant.quote)}</p>
       <div class="tags">${(participant.genres || []).map((genre) => `<span class="tag">${escapeHtml(genre)}</span>`).join("")}</div>
+      <p class="card-hint">Toque para ver estatísticas, indicações e leituras.</p>
     </article>
   `;
+}
+
+function participantReviewEntries(participantId) {
+  return Object.entries(state.reviews || {})
+    .flatMap(([bookId, reviews]) => (reviews || [])
+      .filter((review) => review.participantId === participantId)
+      .map((review) => ({ book: bookById(bookId), review })))
+    .filter((item) => item.book)
+    .sort((a, b) => bookSortValue(b.book) - bookSortValue(a.book));
+}
+
+function participantCompletedEntries(participantId) {
+  return completedReadEntries()
+    .filter((entry) => entry.participantId === participantId)
+    .map((entry) => ({ ...entry, book: bookById(entry.bookId) }))
+    .filter((entry) => entry.book)
+    .sort((a, b) => Date.parse(b.readDate || 0) - Date.parse(a.readDate || 0));
+}
+
+function linkedBookList(books, emptyText, metaFn = (book) => `${book.month} ${book.year}`) {
+  if (!books.length) return `<p class="muted">${escapeHtml(emptyText)}</p>`;
+  return `
+    <div class="linked-list">
+      ${books.map((book) => `
+        <button class="linked-list-item" type="button" data-open-book="${escapeAttr(book.id)}">
+          <strong>${escapeHtml(book.title)}</strong>
+          <span>${escapeHtml(metaFn(book))}</span>
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function groupedBookList(books, emptyText, metaFn = (book) => `${book.month} ${book.year}`) {
+  if (!books.length) return `<p class="muted">${escapeHtml(emptyText)}</p>`;
+  const groups = new Map();
+  books.forEach((book) => {
+    const year = Number(book.year || new Date().getFullYear());
+    if (!groups.has(year)) groups.set(year, []);
+    groups.get(year).push(book);
+  });
+  return `
+    <div class="linked-year-list">
+      ${[...groups.entries()].sort((a, b) => b[0] - a[0]).map(([year, yearBooks], index) => `
+        <details class="linked-year-group" ${index === 0 ? "open" : ""}>
+          <summary><span>${year}</span><small>${yearBooks.length} livro${yearBooks.length === 1 ? "" : "s"}</small></summary>
+          ${linkedBookList(yearBooks.sort((a, b) => bookSortValue(b) - bookSortValue(a)), "", metaFn)}
+        </details>
+      `).join("")}
+    </div>
+  `;
+}
+
+function completedBookList(entries) {
+  if (!entries.length) return `<p class="muted">Nenhuma leitura concluída registrada no feed ainda.</p>`;
+  const groups = new Map();
+  entries.forEach((entry) => {
+    const year = Number(entry.year || readYear(entry.readDate) || new Date().getFullYear());
+    if (!groups.has(year)) groups.set(year, []);
+    groups.get(year).push(entry);
+  });
+  return `
+    <div class="linked-year-list">
+      ${[...groups.entries()].sort((a, b) => b[0] - a[0]).map(([year, yearEntries], index) => `
+        <details class="linked-year-group" ${index === 0 ? "open" : ""}>
+          <summary><span>${year}</span><small>${yearEntries.length} leitura${yearEntries.length === 1 ? "" : "s"}</small></summary>
+          <div class="linked-list">
+            ${yearEntries.map((entry) => `
+              <button class="linked-list-item" type="button" data-open-book="${escapeAttr(entry.book.id)}">
+                <strong>${escapeHtml(entry.book.title)}</strong>
+                <span>${escapeHtml(displayReadDate(entry.readDate) || String(entry.year))}</span>
+              </button>
+            `).join("")}
+          </div>
+        </details>
+      `).join("")}
+    </div>
+  `;
+}
+
+function participantReviewList(rows) {
+  if (!rows.length) return `<p class="muted">Nenhuma avaliação salva ainda.</p>`;
+  const groups = new Map();
+  rows.forEach((row) => {
+    const year = Number(row.book.year || new Date().getFullYear());
+    if (!groups.has(year)) groups.set(year, []);
+    groups.get(year).push(row);
+  });
+  return `
+    <div class="linked-year-list">
+      ${[...groups.entries()].sort((a, b) => b[0] - a[0]).map(([year, yearRows], index) => `
+        <details class="linked-year-group" ${index === 0 ? "open" : ""}>
+          <summary><span>${year}</span><small>${yearRows.length} avaliação${yearRows.length === 1 ? "" : "ões"}</small></summary>
+          <div class="linked-list">
+            ${yearRows.map(({ book, review }) => `
+              <button class="linked-list-item" type="button" data-open-book="${escapeAttr(book.id)}">
+                <strong>${escapeHtml(book.title)} · ${formatRating(review.rating)} estrelas</strong>
+                <span>${escapeHtml(review.threeWords || review.deepReview || review.comment || "Sem comentário")}</span>
+              </button>
+            `).join("")}
+          </div>
+        </details>
+      `).join("")}
+    </div>
+  `;
+}
+
+function averageLabel(values = []) {
+  return values.length ? (values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(1) : "0.0";
+}
+
+function participantGenreLine(participantId) {
+  const counts = new Map();
+  state.books
+    .filter((book) => book.indicatedBy === participantId)
+    .forEach((book) => counts.set(book.genre || "Sem gênero", (counts.get(book.genre || "Sem gênero") || 0) + 1));
+  const genres = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 2)
+    .map(([genre]) => genre);
+  return genres.length ? genres.join(", ") : "A definir";
 }
 
 function effectiveIndicationOrder() {
@@ -3068,23 +3383,16 @@ async function moveOrder(participantId, direction) {
 
 function reviewCard(review, bookId) {
   const isMine = review.participantId === currentParticipant().id;
-  review.likedBy ||= [];
-  const liked = review.likedBy.includes(currentParticipant().id);
-  const likeNames = likedByText(review.likedBy);
+  review.reactions = normalizedReactions(review);
   return `
     <article class="review-card">
       <header>
-        <strong>${escapeHtml(nameById(review.participantId))}</strong>
+        <button class="inline-link" type="button" data-open-participant="${escapeAttr(review.participantId)}">${escapeHtml(nameById(review.participantId))}</button>
         <span><strong>${formatRating(review.rating)}</strong> <span class="star-row">${stars(review.rating)}</span></span>
       </header>
       ${review.threeWords ? `<p class="three-words">${escapeHtml(review.threeWords)}</p>` : ""}
       <p>${escapeHtml(review.deepReview || review.comment || "Sem resenha, só o carimbo das estrelas.")}</p>
-      <div class="review-actions">
-        <button class="like-button ${liked ? "active" : ""}" type="button" data-like-review data-book-id="${escapeAttr(bookId)}" data-participant-id="${escapeAttr(review.participantId)}">
-          ${liked ? "Descurtir" : "Curtir"} · ${review.likedBy.length} curtida${review.likedBy.length === 1 ? "" : "s"}
-        </button>
-      </div>
-      ${likeNames ? `<p class="like-details">${escapeHtml(likeNames)}</p>` : ""}
+      ${reactionControlsHtml(review, `data-react-review data-book-id="${escapeAttr(bookId)}" data-participant-id="${escapeAttr(review.participantId)}"`)}
       ${isMine ? `
         <div class="button-row">
           <button class="ghost-button" type="button" data-open-review-form>Editar minha avaliação</button>
@@ -3099,35 +3407,32 @@ function feedCard(item) {
   const participant = participantById(item.participantId);
   const book = bookById(item.bookId);
   if (!participant || !book) return "";
-  item.likedBy ||= [];
   item.comments ||= [];
-  item.likes = item.likedBy.length;
+  item.reactions = normalizedReactions(item);
+  item.likes = reactionTotal(item.reactions);
   const current = currentParticipant();
   const isMine = item.participantId === current.id;
-  const liked = item.likedBy.includes(current.id);
-  const likeNames = likedByText(item.likedBy);
+  const displayType = readingStatusFromProgress(item.progress);
   return `
     <article class="feed-card">
       <header class="feed-author">
-        <div>
+        <div class="identity-link" role="button" tabindex="0" data-open-participant="${escapeAttr(participant.id)}">
           ${avatarHtml(participant, "width: 48px; height: 48px; border-radius: 50%; font-size: 15px")}
-          <div><strong>${escapeHtml(participant.name)}</strong><p class="muted">${escapeHtml(item.type)}</p></div>
+          <div><strong>${escapeHtml(participant.name)}</strong><p class="muted">${escapeHtml(displayType)}</p></div>
         </div>
         <span class="muted">${escapeHtml(item.date)}</span>
       </header>
       ${item.text ? `<p>${escapeHtml(item.text)}</p>` : ""}
       ${item.progress !== undefined ? `<div><div class="mini-row"><span>${item.progress}%</span><span class="muted">${book.pages || "?"} páginas</span></div><div class="progress-track"><div class="progress-fill" style="--value: ${item.progress}%"></div></div></div>` : ""}
-      <div class="feed-book">
+      <div class="feed-book clickable-book" role="button" tabindex="0" data-open-book="${escapeAttr(book.id)}">
         <div>
           <strong>${escapeHtml(book.title)}</strong>
           <p class="muted">${escapeHtml(book.author)}</p>
         </div>
         ${miniCoverHtml(book)}
       </div>
+      ${reactionControlsHtml(item, `data-react-feed data-feed-id="${escapeAttr(item.id)}"`)}
       <div class="feed-actions">
-        <button class="like-button ${liked ? "active" : ""}" type="button" data-like-feed="${item.id}">
-          ${liked ? "Descurtir" : "Curtir"} · ${item.likes || 0} curtida${item.likes === 1 ? "" : "s"}
-        </button>
         <button class="comment-button" type="button" data-comment-feed="${item.id}">
           Comentar · ${item.comments.length}
         </button>
@@ -3136,7 +3441,6 @@ function feedCard(item) {
           <button class="ghost-button danger-button" type="button" data-delete-feed="${item.id}">Excluir histórico</button>
         ` : ""}
       </div>
-      ${likeNames ? `<p class="like-details">${escapeHtml(likeNames)}</p>` : ""}
       ${item.comments.length ? `
         <div class="feed-comments">
           ${item.comments.map((comment) => feedCommentHtml(comment, item.id)).join("")}
@@ -3161,29 +3465,66 @@ function feedCard(item) {
 
 function feedCommentHtml(comment, feedId) {
   const isMine = comment.participantId === currentParticipant().id;
-  comment.likedBy ||= [];
-  const liked = comment.likedBy.includes(currentParticipant().id);
-  const likeNames = likedByText(comment.likedBy);
+  comment.reactions = normalizedReactions(comment);
   return `
     <div class="feed-comment">
-      <strong>${escapeHtml(nameById(comment.participantId))}</strong>
+      <button class="inline-link" type="button" data-open-participant="${escapeAttr(comment.participantId)}">${escapeHtml(nameById(comment.participantId))}</button>
       <div class="feed-comment-meta">
         <span>${escapeHtml(comment.date || "")}</span>
-        <button class="like-button comment-like ${liked ? "active" : ""}" type="button" data-feed-id="${escapeAttr(feedId)}" data-comment-id="${escapeAttr(comment.id)}" data-like-feed-comment>
-          ${liked ? "Descurtir" : "Curtir"} · ${comment.likedBy.length}
-        </button>
       </div>
       <p>${escapeHtml(comment.text)}</p>
-      ${likeNames ? `<p class="like-details">${escapeHtml(likeNames)}</p>` : ""}
+      ${reactionControlsHtml(comment, `data-react-feed-comment data-feed-id="${escapeAttr(feedId)}" data-comment-id="${escapeAttr(comment.id)}"`)}
       ${isMine ? `<button class="ghost-button danger-button" type="button" data-feed-id="${escapeAttr(feedId)}" data-comment-id="${escapeAttr(comment.id)}" data-delete-feed-comment>Excluir comentário</button>` : ""}
     </div>
   `;
 }
 
-function likedByText(ids = []) {
-  const names = [...new Set(ids || [])].map(nameById).filter(Boolean);
-  if (!names.length) return "";
-  return `Curtido por ${formatNameList(names)}`;
+function reactionControlsHtml(target, attrs = "") {
+  const reactions = normalizedReactions(target);
+  const currentId = currentParticipant()?.id || "";
+  const activeOption = REACTION_OPTIONS.find((option) => reactions[option.key]?.includes(currentId));
+  const total = reactionTotal(reactions);
+  return `
+    <div class="reaction-widget" aria-label="Reações">
+      ${total ? reactionSummaryHtml(reactions, total) : ""}
+      <details class="reaction-picker">
+        <summary>${activeOption ? `<span aria-hidden="true">${activeOption.emoji}</span> ${escapeHtml(activeOption.label)}` : "Reagir"}</summary>
+        <div class="reaction-popover" role="menu">
+          ${REACTION_OPTIONS.map((option) => {
+            const active = reactions[option.key]?.includes(currentId);
+            return `
+              <button class="reaction-option ${active ? "active" : ""}" type="button" ${attrs} data-reaction="${option.key}" title="${escapeAttr(option.label)}" aria-label="${escapeAttr(option.label)}" role="menuitem">
+                <span aria-hidden="true">${option.emoji}</span>
+              </button>
+            `;
+          }).join("")}
+        </div>
+      </details>
+    </div>
+    ${reactionDetailsHtml(reactions)}
+  `;
+}
+
+function reactionSummaryHtml(reactions = {}, total = reactionTotal(reactions)) {
+  const visible = REACTION_OPTIONS
+    .filter((option) => reactions[option.key]?.length)
+    .slice(0, 4);
+  return `
+    <div class="reaction-summary" title="${escapeAttr(`${total} reação${total === 1 ? "" : "ões"}`)}">
+      ${visible.map((option) => `<span aria-hidden="true">${option.emoji}</span>`).join("")}
+      <strong>${total}</strong>
+    </div>
+  `;
+}
+
+function reactionDetailsHtml(reactions = {}) {
+  const rows = REACTION_OPTIONS
+    .map((option) => {
+      const names = [...new Set(reactions[option.key] || [])].map(nameById).filter(Boolean);
+      return names.length ? `${option.emoji} ${formatNameList(names)}` : "";
+    })
+    .filter(Boolean);
+  return rows.length ? `<p class="reaction-details">${escapeHtml(rows.join(" · "))}</p>` : "";
 }
 
 function formatNameList(names = []) {
@@ -3194,7 +3535,7 @@ function formatNameList(names = []) {
 
 function bookFavoriteCard(book) {
   return `
-    <article class="book-card panel">
+    <article class="book-card panel clickable-card" role="button" tabindex="0" data-open-book="${escapeAttr(book.id)}">
       <div class="book-showcase">
         ${coverHtml(book)}
         <div>
@@ -3246,8 +3587,8 @@ function quickStat(label, value, aux) {
   return `<article class="stat-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><p class="muted">${escapeHtml(aux)}</p></article>`;
 }
 
-function statCard(label, value, aux) {
-  return `<article class="stat-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><p class="muted">${escapeHtml(aux)}</p></article>`;
+function statCard(label, value, aux, navAttrs = "") {
+  return `<article class="stat-card ${navAttrs ? "clickable-card" : ""}" ${navAttrs ? `role="button" tabindex="0" ${navAttrs}` : ""}><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><p class="muted">${escapeHtml(aux)}</p></article>`;
 }
 
 function reviewsFor(bookId) {
@@ -3357,6 +3698,13 @@ function isCompletedFeedItem(item) {
   return item?.type === "Marcou como lido" || Number(item?.progress || 0) >= 100;
 }
 
+function readingStatusFromProgress(progress) {
+  const value = Number(progress || 0);
+  if (value >= 100) return "Leitura concluída";
+  if (value <= 0) return "Leitura ainda não iniciada";
+  return "Leitura em andamento";
+}
+
 function latestBook() {
   return sortedBooks()[0];
 }
@@ -3379,6 +3727,20 @@ function isFavorite(bookId) {
 
 function bookById(id) {
   return state.books.find((book) => book.id === id);
+}
+
+function bookByTitle(title = "") {
+  const normalized = normalizeLookup(title);
+  if (!normalized) return null;
+  return state.books.find((book) => normalizeLookup(book.title) === normalized) || null;
+}
+
+function normalizeLookup(value = "") {
+  return String(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
 }
 
 function participantById(id) {
