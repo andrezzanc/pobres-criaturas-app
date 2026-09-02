@@ -1,6 +1,6 @@
 const STORAGE_KEY = "pobresCriaturasPassport";
 const SESSION_KEY = "pobresCriaturasSession";
-const APP_VERSION = 30;
+const APP_VERSION = 34;
 const CLOUD_STATE_ID = "default-club-state";
 const supabaseSettings = window.POBRES_CRIATURAS_SUPABASE || {};
 const clubDb = window.supabase && supabaseSettings.url && supabaseSettings.publishableKey
@@ -26,6 +26,16 @@ const REACTION_OPTIONS = [
   { key: "write", emoji: "\u270D\uFE0F", label: "Anotando" },
   { key: "dove", emoji: "\u{1F54A}\uFE0F", label: "Paz" },
   { key: "hug", emoji: "\u{1FAC2}", label: "Abraço" },
+];
+const BOOK_TAG_OPTIONS = [
+  { key: "recomendo", label: "Recomendo" },
+  { key: "nao-recomendo", label: "Não recomendo" },
+  { key: "favorito", label: "Favorito" },
+  { key: "quero-reler", label: "Quero reler" },
+  { key: "leitura-rapida", label: "Leitura rápida" },
+  { key: "leitura-pesada", label: "Leitura pesada" },
+  { key: "me-surpreendeu", label: "Me surpreendeu" },
+  { key: "debate-bom", label: "Rendeu debate" },
 ];
 
 const seed = {
@@ -72,6 +82,9 @@ let selectedParticipantId = "";
 let meetingEditing = false;
 let bookFormMode = null;
 let bookFormDraft = null;
+let readingDetailsOpen = false;
+let bookHistoryOpen = false;
+let bookHistoryScope = "all";
 let feedComposerOpen = false;
 let feedEditId = null;
 let feedCommentId = null;
@@ -1604,6 +1617,12 @@ function fallbackKey(item) {
 }
 
 function withStateDefaults(value) {
+  value.users ||= [];
+  value.participants ||= [];
+  value.books ||= [];
+  value.reviews ||= {};
+  value.progress ||= {};
+  value.favorites ||= {};
   value.notifications ||= [];
   value.notificationSettings ||= {};
   value.notificationSettings.pushEnabled ||= false;
@@ -1627,7 +1646,22 @@ function withStateDefaults(value) {
       review.likedBy = review.reactions.heart || [];
     });
   });
+  Object.values(value.progress || {}).forEach(normalizeReadingProgress);
   return value;
+}
+
+function normalizeReadingProgress(progress = {}) {
+  if (!progress || typeof progress !== "object") return {};
+  progress.__startedDates = progress.__startedDates && typeof progress.__startedDates === "object" ? progress.__startedDates : {};
+  progress.__completedDates = progress.__completedDates && typeof progress.__completedDates === "object" ? progress.__completedDates : {};
+  progress.__bookTags = progress.__bookTags && typeof progress.__bookTags === "object" ? progress.__bookTags : {};
+  return progress;
+}
+
+function memberProgress(participantId = currentParticipant()?.id || "") {
+  if (!participantId) return normalizeReadingProgress({});
+  state.progress[participantId] ||= {};
+  return normalizeReadingProgress(state.progress[participantId]);
 }
 
 function normalizedReactions(target = {}) {
@@ -1697,6 +1731,8 @@ function routeState() {
     view: currentView,
     selectedBookId: selectedBookId || "",
     selectedParticipantId: selectedParticipantId || "",
+    bookHistoryOpen: Boolean(bookHistoryOpen),
+    bookHistoryScope: bookHistoryScope || "all",
   };
 }
 
@@ -1704,7 +1740,9 @@ function routeKey(route = routeState()) {
   const view = route.view || "feed";
   const bookId = view === "books" ? route.selectedBookId || "" : "";
   const participantId = view === "participant" ? route.selectedParticipantId || "" : "";
-  return `${view}|${bookId}|${participantId}`;
+  const history = view === "books" && route.bookHistoryOpen ? "history" : "";
+  const scope = history ? route.bookHistoryScope || "all" : "";
+  return `${view}|${bookId}|${participantId}|${history}|${scope}`;
 }
 
 function rememberRoute(mode = "push") {
@@ -1729,6 +1767,8 @@ function restoreRoute(route) {
   restoringHistory = true;
   selectedBookId = route.selectedBookId || selectedBookId || "";
   selectedParticipantId = route.selectedParticipantId || selectedParticipantId || "";
+  bookHistoryOpen = route.view === "books" ? Boolean(route.bookHistoryOpen) : false;
+  bookHistoryScope = route.view === "books" ? route.bookHistoryScope || "all" : "all";
   setView(route.view || "feed", { history: "none" });
   restoringHistory = false;
   lastRouteKey = routeKey(routeState());
@@ -1773,6 +1813,9 @@ function openBooks(bookId = "") {
   selectedBookId = bookId || latestBook()?.id || "";
   reviewFormOpen = false;
   bookFormMode = null;
+  readingDetailsOpen = false;
+  bookHistoryOpen = false;
+  bookHistoryScope = "all";
   setView("books");
 }
 
@@ -1947,14 +1990,16 @@ function renderHome() {
         <div class="section-heading">
           <div>
             <p class="eyebrow">Leitura em destaque</p>
-            <h3>${escapeHtml(featuredBook.title)}</h3>
+            <h3><button class="inline-link book-title-link" type="button" data-open-book="${escapeAttr(featuredBook.id)}">${escapeHtml(featuredBook.title)}</button></h3>
           </div>
-          <button class="secondary-button" data-jump="books">Avaliar livro</button>
+          <button class="secondary-button" data-open-featured-book="${escapeAttr(featuredBook.id)}">Abrir livro</button>
         </div>
         <div class="book-showcase">
-          ${coverHtml(featuredBook)}
+          <div class="book-cover-link clickable-book" role="button" tabindex="0" data-open-book="${escapeAttr(featuredBook.id)}">
+            ${coverHtml(featuredBook)}
+          </div>
           <div>
-            <p>${escapeHtml(featuredBook.synopsis || "Sem sinopse cadastrada ainda.")}</p>
+            ${synopsisTeaserHtml(featuredBook.synopsis)}
             <div class="rating-big">${formatRating(averageFor(featuredBook.id))} <span class="star-row">${stars(averageFor(featuredBook.id))}</span></div>
             <div class="progress-track" aria-label="Progresso ${featuredProgress}%"><div class="progress-fill" style="--value: ${featuredProgress}%"></div></div>
             <p class="muted">${featuredProgress}% lido por você. Média calculada com ${reviewsFor(featuredBook.id).length} avaliação${reviewsFor(featuredBook.id).length === 1 ? "" : "ões"}.</p>
@@ -1975,6 +2020,7 @@ function renderHome() {
     renderHome();
   });
   document.querySelector("[data-jump='books']")?.addEventListener("click", () => openBooks());
+  document.querySelector("[data-open-featured-book]")?.addEventListener("click", () => openBooks(featuredBook?.id));
   wireNavigationLinks();
 }
 
@@ -2166,37 +2212,184 @@ function renderBooks() {
       }
       reviewFormOpen = false;
       reviewFormDraft = null;
+      readingDetailsOpen = false;
+      bookHistoryOpen = false;
+      bookHistoryScope = "all";
       renderBooks();
     });
   });
   wireReviewControls(selected);
+  wireBookDetailControls(selected);
   wireNavigationLinks();
 }
 
 function bookReviewArea(selected) {
   const ownReview = myReview(selected.id);
   return `
-    <section class="review-layout">
-      <article class="panel">
-        <div class="book-showcase">
-          ${coverHtml(selected)}
-          <div>
-            <p class="eyebrow">${escapeHtml(selected.month)} ${selected.year} | indicado por <button class="inline-link compact-link" type="button" data-open-participant="${escapeAttr(selected.indicatedBy)}">${escapeHtml(nameById(selected.indicatedBy))}</button></p>
-            <h3>${escapeHtml(selected.title)}</h3>
-            <p class="muted">${escapeHtml(selected.author)} | ${escapeHtml(selected.genre || "Sem gênero")} | ${selected.pages || "?"} páginas</p>
-            <div class="rating-big">${formatRating(averageFor(selected.id))} <span class="star-row">${stars(averageFor(selected.id))}</span></div>
-            <button class="favorite-toggle ${isFavorite(selected.id) ? "active" : ""}" data-favorite="${selected.id}">
-              ${isFavorite(selected.id) ? "Remover dos favoritos" : "Adicionar aos favoritos"}
-            </button>
-            <button class="ghost-button" type="button" data-edit-book>Editar livro</button>
+    <section class="book-detail-stack">
+      <section class="review-layout">
+        <article class="panel">
+          <div class="book-showcase">
+            ${coverHtml(selected)}
+            <div>
+              <p class="eyebrow">${escapeHtml(selected.month)} ${selected.year} | indicado por <button class="inline-link compact-link" type="button" data-open-participant="${escapeAttr(selected.indicatedBy)}">${escapeHtml(nameById(selected.indicatedBy))}</button></p>
+              <h3>${escapeHtml(selected.title)}</h3>
+              <p class="muted">${escapeHtml(selected.author)} | ${escapeHtml(selected.genre || "Sem gênero")} | ${selected.pages || "?"} páginas</p>
+              <div class="rating-big">${formatRating(averageFor(selected.id))} <span class="star-row">${stars(averageFor(selected.id))}</span></div>
+              <div class="button-row">
+                <button class="favorite-toggle ${isFavorite(selected.id) ? "active" : ""}" data-favorite="${selected.id}">
+                  ${isFavorite(selected.id) ? "Remover dos favoritos" : "Adicionar aos favoritos"}
+                </button>
+                <button class="ghost-button" type="button" data-edit-book>Editar livro</button>
+              </div>
+              ${selected.synopsis ? `<div class="book-synopsis">${synopsisTeaserHtml(selected.synopsis, 320)}</div>` : ""}
+            </div>
           </div>
-        </div>
-      </article>
+        </article>
+        ${bookReadingPanel(selected)}
+      </section>
       ${reviewFormOpen ? reviewFormHtml(selected, ownReview) : reviewSummaryHtml(selected, ownReview)}
     </section>
+    ${bookHistoryOpen ? bookReadingHistoryPanel(selected) : ""}
     <section class="review-list">
-      ${reviewsFor(selected.id).length ? reviewsFor(selected.id).map((review) => reviewCard(review, selected.id)).join("") : emptyPanel("Ainda sem avaliações", "Quando as integrantes salvarem estrelas, a média aparece aqui.")}
+      <article class="panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Avaliações do clube</p>
+            <h3>Resenhas e estrelas</h3>
+          </div>
+        </div>
+        <div class="review-list">
+          ${reviewsFor(selected.id).length ? reviewsFor(selected.id).map((review) => reviewCard(review, selected.id)).join("") : `<p class="muted">Ainda sem avaliações. Quando as integrantes salvarem estrelas, a média aparece aqui.</p>`}
+        </div>
+      </article>
     </section>
+  `;
+}
+
+function bookReadingPanel(book) {
+  const participant = currentParticipant();
+  const meta = readingMeta(participant.id, book.id);
+  const ownReview = myReview(book.id);
+  const historyCount = bookFeedItems(book.id, participant.id).length;
+  const allHistoryCount = bookFeedItems(book.id).length;
+  return `
+    <article class="panel my-reading-panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Minha leitura</p>
+          <h3>Dados deste livro</h3>
+        </div>
+        ${readingDetailsOpen ? "" : `<button class="save-button" type="button" data-open-reading-details>Editar dados</button>`}
+      </div>
+      ${readingDetailsOpen ? readingDetailsFormHtml(book, meta) : `
+        <div class="book-options-grid">
+          ${bookOptionCard("Status", readingStatusFromProgress(meta.progress), `${meta.progress}% registrado`)}
+          ${bookOptionCard("Minha nota", ownReview ? `${formatRating(ownReview.rating)} estrelas` : "Ainda sem nota", ownReview?.threeWords || "Avaliação opcional")}
+          ${bookOptionCard("Data de leitura", readingDateRangeLabel(meta), readingDurationLabel(meta.startDate, meta.finishDate), "data-open-reading-details")}
+          ${bookOptionCard("Etiquetas", tagListText(meta.tags), meta.tags.length ? "Clique para editar" : "Clique para marcar", "data-open-reading-details")}
+          ${bookOptionCard("Histórico", bookHistoryOpen ? "Histórico aberto" : historyUpdateLabel(allHistoryCount), bookHistoryOpen ? "Toque para ocultar" : personalHistoryLabel(historyCount), "data-toggle-book-history")}
+        </div>
+      `}
+    </article>
+  `;
+}
+
+function bookOptionCard(label, value, aux = "", attrs = "") {
+  const tag = attrs ? "button" : "div";
+  const type = attrs ? ` type="button"` : "";
+  return `
+    <${tag} class="book-option-card ${attrs ? "clickable-option" : ""}"${type} ${attrs}>
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      ${aux ? `<small>${escapeHtml(aux)}</small>` : ""}
+    </${tag}>
+  `;
+}
+
+function readingDetailsFormHtml(book, meta) {
+  return `
+    <form id="reading-details-form" class="reading-details-form">
+      <input type="hidden" name="bookId" value="${escapeAttr(book.id)}" />
+      <label>
+        <span>Data em que começou</span>
+        <input name="startedDate" type="date" value="${escapeAttr(meta.startDate || "")}" />
+      </label>
+      <label>
+        <span>Data em que terminou</span>
+        <input name="finishedDate" type="date" value="${escapeAttr(meta.finishDate || "")}" />
+      </label>
+      <fieldset class="tag-fieldset">
+        <legend>Etiquetas</legend>
+        <div class="tag-checkboxes">
+          ${BOOK_TAG_OPTIONS.map((option) => `
+            <label class="tag-checkbox">
+              <input type="checkbox" name="tags" value="${escapeAttr(option.key)}" ${meta.tags.includes(option.key) ? "checked" : ""} />
+              <span>${escapeHtml(option.label)}</span>
+            </label>
+          `).join("")}
+        </div>
+      </fieldset>
+      <div class="button-row">
+        <button class="save-button" type="submit">Salvar dados da leitura</button>
+        <button class="ghost-button" type="button" data-cancel-reading-details>Cancelar</button>
+      </div>
+    </form>
+  `;
+}
+
+function bookReadingHistoryPanel(book) {
+  const currentId = currentParticipant()?.id || "";
+  const allItems = bookFeedItems(book.id);
+  const mineItems = bookFeedItems(book.id, currentId);
+  const scope = bookHistoryScope === "mine" ? "mine" : "all";
+  const items = scope === "mine" ? mineItems : allItems;
+  return `
+    <section class="panel book-history-panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Histórico de leitura</p>
+          <h3>Atualizações deste livro</h3>
+        </div>
+        <div class="button-row">
+          <span class="muted">${items.length} registro${items.length === 1 ? "" : "s"}</span>
+          <button class="ghost-button" type="button" data-close-book-history>Fechar histórico</button>
+        </div>
+      </div>
+      <div class="history-filter" role="group" aria-label="Filtrar histórico do livro">
+        <button class="${scope === "all" ? "active" : ""}" type="button" data-book-history-scope="all">
+          Todas <span>${allItems.length}</span>
+        </button>
+        <button class="${scope === "mine" ? "active" : ""}" type="button" data-book-history-scope="mine">
+          Só minhas <span>${mineItems.length}</span>
+        </button>
+      </div>
+      ${items.length ? `<div class="book-history-list">${items.map(bookHistoryCard).join("")}</div>` : `<p class="muted">${scope === "mine" ? "Você ainda não publicou atualização no feed para este livro." : "Quando alguém publicar progresso no feed para este livro, as atualizações aparecem aqui também."}</p>`}
+    </section>
+  `;
+}
+
+function bookHistoryCard(item) {
+  const participant = participantById(item.participantId);
+  if (!participant) return "";
+  item.reactions = normalizedReactions(item);
+  const progress = Number(item.progress || 0);
+  return `
+    <article class="book-history-card">
+      <header class="feed-author">
+        <div class="identity-link" role="button" tabindex="0" data-open-participant="${escapeAttr(participant.id)}">
+          ${avatarHtml(participant, "width: 42px; height: 42px; border-radius: 50%; font-size: 13px")}
+          <div><strong>${escapeHtml(participant.name)}</strong><p class="muted">${escapeHtml(readingStatusFromProgress(progress))}</p></div>
+        </div>
+        <span class="muted">${escapeHtml(displayReadDate(item.readDate || item.date) || item.date || "")}</span>
+      </header>
+      ${item.text ? `<p>${escapeHtml(item.text)}</p>` : ""}
+      <div>
+        <div class="mini-row"><span>${progress}%</span><span class="muted">progresso</span></div>
+        <div class="progress-track"><div class="progress-fill" style="--value: ${progress}%"></div></div>
+      </div>
+      ${reactionControlsHtml(item, `data-react-book-feed data-feed-id="${escapeAttr(item.id)}"`)}
+    </article>
   `;
 }
 
@@ -2382,6 +2575,61 @@ function wireReviewControls(selected) {
     bookFormMode = "edit";
     bookFormDraft = null;
     renderBooks();
+  });
+}
+
+function wireBookDetailControls(selected) {
+  if (!selected) return;
+  document.querySelectorAll("[data-open-reading-details]").forEach((button) => {
+    button.addEventListener("click", () => {
+      readingDetailsOpen = true;
+      bookHistoryOpen = false;
+      renderBooks();
+    });
+  });
+  document.querySelector("[data-cancel-reading-details]")?.addEventListener("click", () => {
+    readingDetailsOpen = false;
+    renderBooks();
+  });
+  document.querySelector("[data-toggle-book-history]")?.addEventListener("click", () => {
+    if (bookHistoryOpen) {
+      bookHistoryOpen = false;
+      if (window.history.state?.pobresCriaturasRoute && window.history.state.bookHistoryOpen) {
+        window.history.back();
+        return;
+      }
+      renderBooks();
+      rememberRoute("replace");
+      return;
+    }
+    readingDetailsOpen = false;
+    bookHistoryOpen = true;
+    bookHistoryScope = "all";
+    renderBooks();
+    rememberRoute("push");
+    window.setTimeout(() => document.querySelector(".book-history-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  });
+  document.querySelector("[data-close-book-history]")?.addEventListener("click", () => {
+    bookHistoryOpen = false;
+    bookHistoryScope = "all";
+    if (window.history.state?.pobresCriaturasRoute && window.history.state.bookHistoryOpen) {
+      window.history.back();
+      return;
+    }
+    renderBooks();
+    rememberRoute("replace");
+  });
+  document.querySelectorAll("[data-book-history-scope]").forEach((button) => {
+    button.addEventListener("click", () => {
+      bookHistoryScope = button.dataset.bookHistoryScope === "mine" ? "mine" : "all";
+      renderBooks();
+      rememberRoute("replace");
+      window.setTimeout(() => document.querySelector(".book-history-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    });
+  });
+  document.querySelector("#reading-details-form")?.addEventListener("submit", submitWithLoading(saveReadingDetails, "Salvando dados..."));
+  document.querySelectorAll("[data-react-book-feed]").forEach((button) => {
+    button.addEventListener("click", () => runReactionAction(button, () => toggleFeedReaction(button.dataset.feedId, button.dataset.reaction, "books")));
   });
 }
 
@@ -2702,7 +2950,7 @@ async function saveMeeting(event) {
   meetingEditing = false;
   const pushPayload = {
     type: "meeting",
-    title: "ReuniÃ£o atualizada",
+    title: "Reunião atualizada",
     message: meetingNotificationText(),
   };
   createNotification({ ...pushPayload, push: false });
@@ -2712,7 +2960,7 @@ async function saveMeeting(event) {
     renderHome();
     return;
   }
-  notify("ReuniÃ£o salva no passaporte do clube.");
+  notify("Reunião salva no passaporte do clube.");
   sendClubPush(pushPayload.title, pushPayload.message, pushPayload.type);
   renderHome();
   return;
@@ -2875,6 +3123,61 @@ async function deleteReview(bookId) {
   renderBooks();
 }
 
+async function saveReadingDetails(event) {
+  event.preventDefault();
+  const participant = currentParticipant();
+  const user = getUser();
+  if (!participant || !user) return;
+  const data = new FormData(event.currentTarget);
+  const bookId = data.get("bookId");
+  const progress = memberProgress(participant.id);
+  const startedDate = data.get("startedDate") || "";
+  const finishedDate = data.get("finishedDate") || "";
+  const tags = data.getAll("tags").filter((tag) => BOOK_TAG_OPTIONS.some((option) => option.key === tag));
+  const previousFinishedDate = progress.__completedDates?.[bookId] || "";
+
+  if (startedDate && finishedDate && Date.parse(`${finishedDate}T12:00:00`) < Date.parse(`${startedDate}T12:00:00`)) {
+    notify("A data de fim nao pode ser anterior ao comeco da leitura.");
+    return;
+  }
+
+  if (startedDate) {
+    progress.__startedDates[bookId] = startedDate;
+    if (!participant.currentBookId) participant.currentBookId = bookId;
+  } else {
+    delete progress.__startedDates[bookId];
+  }
+
+  if (finishedDate) {
+    progress[bookId] = Math.max(Number(progress[bookId] || 0), 100);
+    syncCompletedBook(participant, bookId, "Leitura concluída", 100, finishedDate, previousFinishedDate);
+  } else if (Number(progress[bookId] || 0) < 100) {
+    delete progress.__completedDates[bookId];
+  }
+
+  if (tags.length) {
+    progress.__bookTags[bookId] = tags;
+  } else {
+    delete progress.__bookTags[bookId];
+  }
+
+  persistLocalState();
+  const savedLibrary = await saveMemberLibraryRecord(participant);
+  let savedProfile = true;
+  if (clubDb) {
+    const { data: authData } = await clubDb.auth.getSession();
+    if (authData.session?.user) savedProfile = await saveMemberProfile(authData.session.user, user, participant);
+  }
+  if (!savedLibrary || !savedProfile) {
+    notify("Nao consegui salvar os dados dessa leitura na nuvem. Tente novamente.");
+    renderBooks();
+    return;
+  }
+  readingDetailsOpen = false;
+  notify("Dados da leitura salvos.");
+  renderBooks();
+}
+
 async function toggleFavorite(bookId) {
   const participant = currentParticipant();
   state.favorites[participant.id] ||= [];
@@ -2922,8 +3225,11 @@ async function saveFeed(event) {
   const type = readingStatusFromProgress(progress);
   const text = data.get("text");
   const readDate = data.get("readDate") || todayInputDate();
-  state.progress[participant.id] ||= {};
-  state.progress[participant.id][bookId] = progress;
+  const progressState = memberProgress(participant.id);
+  progressState[bookId] = progress;
+  if (progress > 0 && !progressState.__startedDates[bookId]) {
+    progressState.__startedDates[bookId] = readDate;
+  }
   participant.currentBookId = bookId;
 
   const existing = feedId ? state.feed.find((item) => item.id === feedId && item.participantId === participant.id) : null;
@@ -3013,9 +3319,9 @@ function syncCompletedBook(participant, bookId, type, progress, readDate = today
   const completed = type === "Marcou como lido" || Number(progress) >= 100;
   if (!bookId) return;
   participant.completedBookIds ||= [];
-  state.progress[participant.id] ||= {};
-  const completedDates = state.progress[participant.id].__completedDates || {};
-  state.progress[participant.id].__completedDates = completedDates;
+  const progressState = memberProgress(participant.id);
+  const completedDates = progressState.__completedDates || {};
+  progressState.__completedDates = completedDates;
   const wasCompleted = participant.completedBookIds.includes(bookId);
   const previousYear = readYear(previousReadDate || completedDates[bookId]);
   const nextYear = readYear(readDate);
@@ -3050,7 +3356,7 @@ function syncCompletedBook(participant, bookId, type, progress, readDate = today
   completedDates[bookId] = readDate || todayInputDate();
 }
 
-async function toggleFeedReaction(feedId, reactionKey) {
+async function toggleFeedReaction(feedId, reactionKey, renderTarget = "feed") {
   const participant = currentParticipant();
   const item = state.feed.find((feedItem) => feedItem.id === feedId);
   if (!item || !participant || !REACTION_OPTIONS.some((option) => option.key === reactionKey)) return;
@@ -3063,7 +3369,7 @@ async function toggleFeedReaction(feedId, reactionKey) {
     item.likes = reactionTotal(previous);
     notify("Nao consegui salvar a reação na nuvem. Tente novamente.");
   }
-  renderFeed();
+  renderTarget === "books" ? renderBooks() : renderFeed();
 }
 
 async function toggleFeedCommentReaction(feedId, commentId, reactionKey) {
@@ -3639,6 +3945,22 @@ function emptyPanel(title, text) {
   return `<article class="panel empty-state"><h3>${escapeHtml(title)}</h3><p class="muted">${escapeHtml(text)}</p></article>`;
 }
 
+function synopsisTeaserHtml(text, limit = 230) {
+  const synopsis = String(text || "Sem sinopse cadastrada ainda.").trim();
+  if (synopsis.length <= limit) return `<p>${escapeHtml(synopsis)}</p>`;
+  const short = `${synopsis.slice(0, limit).trim().replace(/[,.!?;:]?$/, "")}...`;
+  return `
+    <details class="synopsis-teaser">
+      <summary>
+        <span class="closed-text">${escapeHtml(short)}</span>
+        <span class="read-more">Leia mais</span>
+        <span class="read-less">Mostrar menos</span>
+      </summary>
+      <p>${escapeHtml(synopsis)}</p>
+    </details>
+  `;
+}
+
 function quickStat(label, value, aux) {
   return `<article class="stat-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><p class="muted">${escapeHtml(aux)}</p></article>`;
 }
@@ -3759,6 +4081,84 @@ function readingStatusFromProgress(progress) {
   if (value >= 100) return "Leitura concluída";
   if (value <= 0) return "Leitura ainda não iniciada";
   return "Leitura em andamento";
+}
+
+function readingMeta(participantId, bookId) {
+  const progress = memberProgress(participantId);
+  const tags = Array.isArray(progress.__bookTags?.[bookId]) ? progress.__bookTags[bookId] : [];
+  return {
+    progress: Number(progress[bookId] || 0),
+    startDate: progress.__startedDates?.[bookId] || inferredStartDate(participantId, bookId),
+    finishDate: progress.__completedDates?.[bookId] || inferredFinishDate(participantId, bookId),
+    tags,
+  };
+}
+
+function bookFeedItems(bookId, participantId = "") {
+  return state.feed
+    .filter((item) => item.bookId === bookId && (!participantId || item.participantId === participantId))
+    .slice()
+    .sort((a, b) => feedReadTime(b) - feedReadTime(a));
+}
+
+function inferredStartDate(participantId, bookId) {
+  const entries = bookFeedItems(bookId, participantId)
+    .filter((item) => Number(item.progress || 0) > 0)
+    .sort((a, b) => feedReadTime(a) - feedReadTime(b));
+  return inputDateFromDisplay(entries[0]?.readDate || entries[0]?.date || "");
+}
+
+function inferredFinishDate(participantId, bookId) {
+  const entries = bookFeedItems(bookId, participantId)
+    .filter((item) => Number(item.progress || 0) >= 100)
+    .sort((a, b) => feedReadTime(a) - feedReadTime(b));
+  return inputDateFromDisplay(entries[0]?.readDate || entries[0]?.date || "");
+}
+
+function feedReadTime(item) {
+  const input = inputDateFromDisplay(item?.readDate || item?.date || "");
+  if (input) return Date.parse(`${input}T12:00:00`);
+  return Date.parse(item?.createdAt || item?.editedAt || 0) || 0;
+}
+
+function readingDateRangeLabel(meta) {
+  if (meta.startDate && meta.finishDate) return `${displayReadDate(meta.startDate)} até ${displayReadDate(meta.finishDate)}`;
+  if (meta.startDate) return `Começou em ${displayReadDate(meta.startDate)}`;
+  if (meta.finishDate) return `Terminou em ${displayReadDate(meta.finishDate)}`;
+  return "Datas não preenchidas";
+}
+
+function historyUpdateLabel(count) {
+  return `${count} ${count === 1 ? "atualização" : "atualizações"}`;
+}
+
+function personalHistoryLabel(count) {
+  if (!count) return "Ver atualizações deste livro";
+  return count === 1 ? "1 atualização sua" : `${count} atualizações suas`;
+}
+
+function readingDurationLabel(startDate, finishDate) {
+  if (!startDate || !finishDate) return "Começo e fim opcionais";
+  const start = Date.parse(`${inputDateFromDisplay(startDate)}T12:00:00`);
+  const finish = Date.parse(`${inputDateFromDisplay(finishDate)}T12:00:00`);
+  if (!Number.isFinite(start) || !Number.isFinite(finish) || finish < start) return "Confira as datas";
+  const days = Math.round((finish - start) / 86400000) + 1;
+  return `${days} dia${days === 1 ? "" : "s"} de leitura`;
+}
+
+function tagListText(tags = []) {
+  if (!tags.length) return "Sem etiquetas";
+  return tags.map(tagLabel).filter(Boolean).join(", ");
+}
+
+function tagLabel(key) {
+  return BOOK_TAG_OPTIONS.find((option) => option.key === key)?.label || key;
+}
+
+function truncateText(text = "", limit = 80) {
+  const value = String(text || "").trim();
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit).trim().replace(/[,.!?;:]?$/, "")}...`;
 }
 
 function latestBook() {
